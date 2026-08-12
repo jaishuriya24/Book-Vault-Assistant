@@ -23,8 +23,8 @@ public class BookController {
         this.bookService = bookService;
     }
 
-    private Long resolveUserId(UserPrincipal user) {
-        return (user != null && user.getUserId() != null) ? user.getUserId() : 1L;
+    private String resolveUserId(UserPrincipal user) {
+        return (user != null && user.getUserId() != null) ? String.valueOf(user.getUserId()) : "Guest";
     }
 
     @GetMapping

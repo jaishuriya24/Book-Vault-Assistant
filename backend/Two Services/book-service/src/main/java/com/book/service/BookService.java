@@ -50,6 +50,10 @@ public class BookService {
         return bookRepository.findById(id);
     }
 
+    public Optional<Book> getBookById(Long id, String userId) {
+        return bookRepository.findByIdAndUserId(id, userId);
+    }
+
     public List<Book> searchBooks(String query) {
         if (query == null || query.isBlank()) {
             return getAllBooks();
@@ -57,7 +61,7 @@ public class BookService {
         return bookRepository.searchBooks(query);
     }
 
-    public Book updateBook(Long id, BookRequest request, Long userId) {
+    public Book updateBook(Long id, BookRequest request, String userId) {
         Book book = getBookById(id, userId)
                 .orElseThrow(() -> new IllegalArgumentException("Book not found with ID: " + id));
 
@@ -79,7 +83,7 @@ public class BookService {
         return bookRepository.save(book);
     }
 
-    public Book updatePosition(Long id, PositionUpdateRequest request, Long userId) {
+    public Book updatePosition(Long id, PositionUpdateRequest request, String userId) {
         Book book = getBookById(id, userId)
                 .orElseThrow(() -> new IllegalArgumentException("Book not found with ID: " + id));
 
@@ -87,7 +91,7 @@ public class BookService {
         return bookRepository.save(book);
     }
 
-    public void deleteBook(Long id, Long userId) {
+    public void deleteBook(Long id, String userId) {
         Book book = getBookById(id, userId)
                 .orElseThrow(() -> new IllegalArgumentException("Book not found with ID: " + id));
         bookRepository.delete(book);

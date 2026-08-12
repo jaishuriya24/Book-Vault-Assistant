@@ -23,6 +23,7 @@ import Shuffle from "../components/ui/Shuffle";
 import ToastNotification from "../components/ui/ToastNotification";
 import ConfirmModal from "../components/ui/ConfirmModal";
 import notify from "../services/notificationService";
+import { extractText } from "../services/ocrService";
 /* ── SVG Icon Components ── */
 const IconBook = () => (
   <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -114,10 +115,22 @@ export default function App() {
 
   useEffect(() => {
     try {
-      const cleanCoverUrl = (img) => (img && typeof img === 'string' && !img.startsWith('http://') && !img.startsWith('https://')) ? img : '';
+      const cleanCoverUrl = (img) => (img && typeof img === 'string') ? img : '';
 
       const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
-      const cleanedStored = stored.map((b) => ({ ...b, cover: cleanCoverUrl(b.cover) }));
+      const cleanedStored = stored.map((b) => {
+        const textContent = b.content || b.extracted_text || b.text || b.fullText || "No text extracted";
+        const pageItems = (b.pages && Array.isArray(b.pages) && b.pages.length > 0)
+          ? b.pages.map(p => typeof p === 'string' ? p : (p.extractedText || p.text || textContent))
+          : [textContent];
+        return {
+          ...b,
+          cover: cleanCoverUrl(b.cover),
+          content: textContent,
+          pages: pageItems,
+          pageCount: b.pageCount || pageItems.length
+        };
+      });
       setBooks(cleanedStored);
 
       // Connect React to Java Spring Boot & MySQL Database API
@@ -127,15 +140,21 @@ export default function App() {
         .then((data) => {
           const list = Array.isArray(data) ? data : (data && data.books) || [];
           if (list && list.length > 0) {
-            const apiBooks = list.map((b) => ({
-              id: String(b.id || b._id || b.timestamp || Date.now()),
-              title: b.title || "Scanned Book",
-              author: b.author || "Unknown",
-              cover: cleanCoverUrl(b.coverImage || b.cover || b.image_base64 || ""),
-              content: b.content || b.extracted_text || b.text || b.fullText || "No text extracted",
-              pages: [],
-              pageCount: b.pageCount || b.page_count || 1,
-            }));
+            const apiBooks = list.map((b) => {
+              const textContent = b.content || b.extracted_text || b.text || b.fullText || "No text extracted";
+              const pageItems = (b.pages && Array.isArray(b.pages) && b.pages.length > 0)
+                ? b.pages.map(p => typeof p === 'string' ? p : (p.extractedText || p.text || textContent))
+                : [textContent];
+              return {
+                id: String(b.id || b._id || b.timestamp || Date.now()),
+                title: b.title || "Scanned Book",
+                author: b.author || "Unknown",
+                cover: cleanCoverUrl(b.coverImage || b.cover || b.image_base64 || ""),
+                content: textContent,
+                pages: pageItems,
+                pageCount: b.pageCount || b.page_count || pageItems.length,
+              };
+            });
             setBooks(apiBooks);
             try {
               localStorage.setItem(STORAGE_KEY, JSON.stringify(apiBooks));
@@ -180,6 +199,38 @@ export default function App() {
 
   const capturedPagesRef = useRef(capturedPages);
   capturedPagesRef.current = capturedPages;
+
+  const handleTextFileChange = (file) => {
+    if (!file) return;
+    setUploadText(file);
+
+    if (file.type && file.type.startsWith("image/")) {
+      const reader = new FileReader();
+      reader.onload = async (ev) => {
+        const dataUrl = ev.target.result;
+        setUploadCover(dataUrl);
+        try {
+          notify.info("Extracting text from uploaded image via OCR...");
+          const text = await extractText(dataUrl);
+          if (text) {
+            setExtractedText(text);
+            notify.success("Text extracted from image successfully!");
+          }
+        } catch (err) {
+          console.warn("OCR error on image upload:", err);
+        }
+      };
+      reader.readAsDataURL(file);
+    } else {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const content = ev.target.result || "";
+        setExtractedText(content);
+        notify.success(`Loaded text content from ${file.name}`);
+      };
+      reader.readAsText(file);
+    }
+  };
   const uploadCoverRef = useRef(uploadCover);
   uploadCoverRef.current = uploadCover;
   const uploadTitleRef = useRef(uploadTitle);
@@ -219,19 +270,23 @@ export default function App() {
     let combinedContent = "";
     if (effectivePages.length > 0) {
       combinedContent = effectivePages
-        .map((p, idx) => `[Page ${idx + 1}]\n${p.extractedText || ""}`)
+        .map((p, idx) => `[Page ${idx + 1}]\n${typeof p === 'string' ? p : (p.extractedText || p.text || "")}`)
         .join("\n\n");
     } else {
-      combinedContent = extractedText || "Scanned Book Page Image";
+      combinedContent = extractedText || "No text content provided.";
     }
+
+    const pagesList = (effectivePages.length > 0)
+      ? effectivePages.map(p => typeof p === 'string' ? p : (p.extractedText || p.text || ""))
+      : [combinedContent];
 
     const newBook = {
       id: Date.now().toString(),
       title: finalTitle,
       cover: effectiveCover,
       content: combinedContent,
-      pages: effectivePages,
-      pageCount: effectivePages.length || 1,
+      pages: pagesList,
+      pageCount: pagesList.length || 1,
     };
 
     const finalizeUpload = () => {
@@ -1031,67 +1086,24 @@ export default function App() {
           )}
         </div>
 
-        {/* Book image popup modal */}
+        {/* Interactive Book Reader Popup */}
         {activeInteractiveBook && (
-          <div
-            onClick={() => setActiveInteractiveBook(null)}
-            style={{
-              position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
-              background: "rgba(0,0,0,0.75)", zIndex: 9999,
-              display: "flex", alignItems: "center", justifyContent: "center",
-              padding: 20,
+          <InteractiveBook
+            coverImage={activeInteractiveBook.cover}
+            bookTitle={activeInteractiveBook.title}
+            bookAuthor={activeInteractiveBook.author || "Uploaded Book"}
+            pages={
+              (activeInteractiveBook.pages && activeInteractiveBook.pages.length > 0)
+                ? activeInteractiveBook.pages.map(p => typeof p === 'string' ? p : (p.extractedText || p.text || activeInteractiveBook.content || ""))
+                : [activeInteractiveBook.content || "No text extracted."]
+            }
+            onClose={() => setActiveInteractiveBook(null)}
+            onOpenReader={() => {
+              const bookId = activeInteractiveBook.id;
+              setActiveInteractiveBook(null);
+              navigate(`/reader/${bookId}`);
             }}
-          >
-            <div
-              onClick={(e) => e.stopPropagation()}
-              style={{
-                background: "#fff", borderRadius: 18,
-                boxShadow: "0 24px 64px rgba(0,0,0,0.35)",
-                maxWidth: 520, width: "100%",
-                overflow: "hidden", position: "relative",
-              }}
-            >
-              {/* Close button */}
-              <button
-                onClick={() => setActiveInteractiveBook(null)}
-                style={{
-                  position: "absolute", top: 12, right: 12, zIndex: 10,
-                  background: "rgba(0,0,0,0.5)", border: "none", borderRadius: "50%",
-                  width: 36, height: 36, cursor: "pointer", color: "#fff",
-                  fontSize: 18, display: "flex", alignItems: "center", justifyContent: "center",
-                }}
-              >✕</button>
-
-              {/* Book image */}
-              {activeInteractiveBook.cover ? (
-                <img
-                  src={activeInteractiveBook.cover}
-                  alt={activeInteractiveBook.title}
-                  style={{ width: "100%", display: "block", maxHeight: 480, objectFit: "contain", background: "#f8f8f8" }}
-                />
-              ) : (
-                <div style={{
-                  width: "100%", height: 320, background: "linear-gradient(135deg,#f0e9df,#e8ddd0)",
-                  display: "flex", alignItems: "center", justifyContent: "center", fontSize: 64,
-                }}>📖</div>
-              )}
-
-              {/* Title */}
-              <div style={{ padding: "16px 20px" }}>
-                <h2 style={{
-                  margin: 0, fontFamily: "Playfair Display, serif",
-                  fontSize: 20, fontWeight: 700, color: "#1e293b",
-                }}>
-                  {activeInteractiveBook.title}
-                </h2>
-                {activeInteractiveBook.pageCount > 0 && (
-                  <p style={{ margin: "6px 0 0", fontSize: 13, color: "#64748b" }}>
-                    {activeInteractiveBook.pageCount} page{activeInteractiveBook.pageCount !== 1 ? "s" : ""} scanned
-                  </p>
-                )}
-              </div>
-            </div>
-          </div>
+          />
         )}
 
         {/* Hover hack for book menu buttons */}
@@ -1242,7 +1254,7 @@ export default function App() {
                           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /></svg>
                           {uploadText ? uploadText.name : 'Choose a .txt, .md, or .json file...'}
                         </div>
-                        <input type="file" accept=".txt,.md,.json" onChange={(e) => setUploadText(e.target.files?.[0] || null)} />
+                        <input type="file" accept=".txt,.md,.json,image/*" onChange={(e) => handleTextFileChange(e.target.files?.[0])} />
                       </div>
                     </div>
                   </>

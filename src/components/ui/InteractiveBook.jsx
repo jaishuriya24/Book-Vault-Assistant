@@ -17,7 +17,13 @@ const speak = (text, { lang = "en-US" } = {}) => {
   });
 };
 
-export default function InteractiveBook({ coverImage, bookTitle = 'Book Title', bookAuthor = 'Author', pages = [], onClose }) {
+const getPageText = (pageItem) => {
+  if (!pageItem) return "";
+  if (typeof pageItem === 'string') return pageItem;
+  return pageItem.extractedText || pageItem.text || pageItem.content || "";
+};
+
+export default function InteractiveBook({ coverImage, bookTitle = 'Book Title', bookAuthor = 'Author', pages = [], onClose, onOpenReader }) {
   const [isOpen, setIsOpen] = useState(true);
   const [currentPage, setCurrentPage] = useState(-1);
   const [viewMode, setViewMode] = useState("original"); // "original" | "translated" | "summary" | "explanation"
@@ -79,7 +85,7 @@ export default function InteractiveBook({ coverImage, bookTitle = 'Book Title', 
   const startReading = () => {
     if (!("speechSynthesis" in window)) return;
     
-    let textToRead = pages[currentPage] || "";
+    let textToRead = getPageText(pages[currentPage]);
     if (viewMode === "translated" && translatedText) textToRead = translatedText;
     if (viewMode === "summary" && summaryText) textToRead = summaryText;
     if (viewMode === "explanation" && explanationText) textToRead = explanationText;
@@ -154,7 +160,7 @@ export default function InteractiveBook({ coverImage, bookTitle = 'Book Title', 
     setIsTranslating(true);
     setViewMode("translated");
     
-    const textToTranslate = pages[currentPage];
+    const textToTranslate = getPageText(pages[currentPage]);
     const apiKey = import.meta.env.VITE_OPENROUTER_API_KEY;
     const model = import.meta.env.VITE_OPENROUTER_MODEL || "google/gemini-flash-1.5";
 
@@ -208,7 +214,7 @@ export default function InteractiveBook({ coverImage, bookTitle = 'Book Title', 
     setIsSummarizing(true);
     setViewMode("summary");
 
-    const textToSummarize = pages[currentPage];
+    const textToSummarize = getPageText(pages[currentPage]);
     const apiKey = import.meta.env.VITE_OPENROUTER_API_KEY;
     const model = import.meta.env.VITE_OPENROUTER_MODEL || "google/gemini-flash-1.5";
 
@@ -262,7 +268,7 @@ export default function InteractiveBook({ coverImage, bookTitle = 'Book Title', 
     setIsExplaining(true);
     setViewMode("explanation");
 
-    const textToExplain = pages[currentPage];
+    const textToExplain = getPageText(pages[currentPage]);
     const apiKey = import.meta.env.VITE_OPENROUTER_API_KEY;
     const model = import.meta.env.VITE_OPENROUTER_MODEL || "google/gemini-flash-1.5";
 
@@ -415,7 +421,7 @@ export default function InteractiveBook({ coverImage, bookTitle = 'Book Title', 
 
                       {/* Display Text Content */}
                       <div style={{ flex: 1, overflowY: 'auto', lineHeight: 1.7, fontSize: '15px', whiteSpace: 'pre-wrap', color: '#2c2c2c', paddingRight: 4 }}>
-                        {viewMode === "original" && (pages[currentPage] || "No text on this page.")}
+                        {viewMode === "original" && (getPageText(pages[currentPage]) || "No text on this page.")}
                         {viewMode === "translated" && (isTranslating ? "Translating... please wait..." : (translatedText || "No translation loaded yet."))}
                         {viewMode === "summary" && (isSummarizing ? "Generating summary... please wait..." : (summaryText || "No summary generated yet."))}
                         {viewMode === "explanation" && (isExplaining ? "Analyzing context... please wait..." : (explanationText || "No explanation generated yet."))}
@@ -491,6 +497,28 @@ export default function InteractiveBook({ coverImage, bookTitle = 'Book Title', 
                 <ChevronRight size={16} />
               </button>
             </div>
+
+            {onOpenReader && (
+              <button
+                onClick={() => { close(); onOpenReader(); }}
+                style={{
+                  marginTop: 6,
+                  padding: '6px 14px',
+                  borderRadius: 10,
+                  border: '1px solid rgba(255,121,0,0.3)',
+                  background: 'rgba(255,121,0,0.08)',
+                  color: '#FF7900',
+                  fontSize: 12,
+                  fontWeight: '600',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6
+                }}
+              >
+                📖 Open Full Reader & Highlights
+              </button>
+            )}
           </div>
         </div>
       </div>

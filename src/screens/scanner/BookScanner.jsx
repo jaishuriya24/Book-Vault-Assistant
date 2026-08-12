@@ -511,6 +511,9 @@ export default function BookScanner({ bookTitle, onTextExtracted, onPageCaptured
   const [uploadedFile, setUploadedFile] = useState(null);
   const [isMirrored, setIsMirrored] = useState(false);
   const [allPredictions, setAllPredictions] = useState([]);
+  const [isAnalyzingText, setIsAnalyzingText] = useState(false);
+  const [isConvertingObjects, setIsConvertingObjects] = useState(false);
+  const [structuredObjects, setStructuredObjects] = useState(null);
 
   const [backendSessionId, setBackendSessionId] = useState(null);
   const [backendStatus, setBackendStatus] = useState("connecting");
@@ -580,7 +583,6 @@ export default function BookScanner({ bookTitle, onTextExtracted, onPageCaptured
 
   const speak = useCallback(
     async (text, { force = false, priority = false } = {}) => {
-      return; // Disabled AI voice completely as requested
       if (!("speechSynthesis" in window && window.speechSynthesis)) return;
       const now = Date.now();
       if (
@@ -1446,83 +1448,55 @@ export default function BookScanner({ bookTitle, onTextExtracted, onPageCaptured
 
   const runOcr = useCallback(
     async (imageDataUrl) => {
+      setStatus("processing");
+      setGuidance("Sending image to backend OCR...");
+
       try {
-        const Tesseract = (await import("tesseract.js")).default;
-        const validLangs = Array.from(
-          new Set(languages.map((l) => (l === "tang" ? "eng" : l))),
-        );
-        const langString = validLangs.join("+");
+        // Convert Base64 to Blob
+        const arr = imageDataUrl.split(',');
+        const mime = arr[0].match(/:(.*?);/)[1];
+        const bstr = atob(arr[1]);
+        let n = bstr.length;
+        const u8arr = new Uint8Array(n);
+        while(n--) {
+            u8arr[n] = bstr.charCodeAt(n);
+        }
+        const blob = new Blob([u8arr], {type:mime});
+        
+        const formData = new FormData();
+        formData.append("file", blob, "scanned_page.jpg");
 
-        const worker = await Tesseract.createWorker(langString, 1, {
-          logger: (m) => {
-            if (m.status === "recognizing text") {
-              setOcrProgress(Math.round(m.progress * 100));
-            }
-          },
+        const springApiUrl = import.meta.env.VITE_SPRING_BOOT_API_URL || import.meta.env.VITE_SERVER_URL || "http://localhost:8082";
+        const response = await fetch(`${springApiUrl}/api/ocr/extract`, {
+          method: "POST",
+          body: formData,
         });
 
-        await worker.setParameters({
-          tessedit_ocr_engine_mode: 1, // OEM_LSTM_ONLY
-          tessedit_pageseg_mode: 3, // PSM_AUTO_OSD
-        });
+        if (!response.ok) {
+          throw new Error("Backend OCR request failed with status " + response.status);
+        }
 
-        const { data } = await worker.recognize(imageDataUrl);
-        await worker.terminate();
+        const data = await response.json();
+        if (data.success) {
+          const finalText = data.text || "Page image captured successfully.";
+          setExtractedText(finalText);
+          setStatus("done");
+          
+          setScannedPagesList((prev) =>
+            prev.map((item) =>
+              item.dataUrl === imageDataUrl ? { ...item, extractedText: finalText } : item
+            )
+          );
 
-        let rawText = (data.text || "").trim();
-        let text = rawText;
-
-        if (!rawText || isOcrGibberish(rawText)) {
-          console.log("Tesseract OCR result was empty or gibberish. Trying Gemini OCR fallback...");
-          try {
-            text = await runGeminiOcr(imageDataUrl, languages[0] || "eng");
-            rawText = text;
-          } catch (geminiErr) {
-            console.error("Gemini OCR fallback failed:", geminiErr);
+          speak("Text extracted successfully!", { force: true });
+          if (onTextExtracted) {
+            onTextExtracted(finalText, imageDataUrl);
           }
         } else {
-          try {
-            text = await cleanOcrText(rawText, languages[0] || "eng");
-          } catch (e) {
-            text = rawText;
-          }
-        }
-
-        const finalText = text || rawText || "Page image captured successfully.";
-        setExtractedText(finalText);
-
-        // Update scannedPagesList item with extracted text
-        setScannedPagesList((prev) =>
-          prev.map((item) =>
-            item.dataUrl === imageDataUrl ? { ...item, extractedText: finalText } : item
-          )
-        );
-
-        speak("Text extracted successfully!", { force: true });
-        if (onTextExtracted) {
-          onTextExtracted(finalText, imageDataUrl);
+          throw new Error(data.error || "OCR failed on backend");
         }
       } catch (err) {
-        console.warn("Tesseract OCR failed. Trying Gemini OCR fallback...", err);
-        try {
-          const geminiText = await runGeminiOcr(imageDataUrl, languages[0] || "eng");
-          if (geminiText) {
-            setExtractedText(geminiText);
-            setScannedPagesList((prev) =>
-              prev.map((item) =>
-                item.dataUrl === imageDataUrl ? { ...item, extractedText: geminiText } : item
-              )
-            );
-            speak("Text extracted successfully using AI fallback!", { force: true });
-            if (onTextExtracted) {
-              onTextExtracted(geminiText, imageDataUrl);
-            }
-            return;
-          }
-        } catch (geminiErr) {
-          console.error("Gemini OCR fallback failed after Tesseract crash:", geminiErr);
-        }
-
+        console.error("Backend OCR failed:", err);
         setStatus("error");
         setCameraError(FRIENDLY_MESSAGES[languages[0] || "eng"].ocrFailed);
         speak(FRIENDLY_MESSAGES[languages[0] || "eng"].ocrFailed, {
@@ -1547,103 +1521,13 @@ export default function BookScanner({ bookTitle, onTextExtracted, onPageCaptured
       const reader = new FileReader();
       reader.onload = async (e) => {
         const dataUrl = e.target.result;
-
-        if (!detector && !isOpenCvReady()) {
-          setStatus("error");
-          setCameraError("Book detector is still initializing. Please wait a moment and try again.");
-          speak("Book detector is still initializing. Please wait.", { force: true });
-          return;
-        }
-
-        const img = new Image();
-        img.onload = async () => {
-          setStatus("processing");
-          setGuidance("Scanning image for book page...");
-          speak("Analyzing image.", { force: true });
-
-          let finalCanvas = null;
-          let cvPageQuad = null;
-
-          const tempCanvas = document.createElement("canvas");
-          tempCanvas.width = img.width;
-          tempCanvas.height = img.height;
-          const tempCtx = tempCanvas.getContext("2d");
-          tempCtx.drawImage(img, 0, 0);
-
-          if (isOpenCvReady()) {
-            try {
-              cvPageQuad = detectBookQuadrilateral(tempCanvas);
-            } catch (err) {
-              console.warn("OpenCV quadrilateral detection failed on upload:", err);
-            }
-          }
-
-          if (cvPageQuad) {
-            try {
-              finalCanvas = warpBookPage(tempCanvas, cvPageQuad.corners);
-              enhanceWarpedPage(finalCanvas);
-              speak("Book page detected and aligned. Extracting text now.", { force: true });
-            } catch (err) {
-              console.warn("OpenCV warping failed on upload:", err);
-            }
-          }
-
-          if (!finalCanvas && detector) {
-            const found = await detectBook(img);
-            const isBook = found && found.type === "book";
-
-            if (isBook) {
-              const w = img.width;
-              const h = img.height;
-              const pad = 0.03;
-              const cropX = Math.max(0, found.minX - w * pad);
-              const cropY = Math.max(0, found.minY - h * pad);
-              const cropW = Math.min(w - cropX, found.maxX - found.minX + w * pad * 2);
-              const cropH = Math.min(h - cropY, found.maxY - found.minY + h * pad * 2);
-
-              const cropCanvas = document.createElement("canvas");
-              cropCanvas.width = cropW;
-              cropCanvas.height = cropH;
-              const cropCtx = cropCanvas.getContext("2d");
-              cropCtx.drawImage(img, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
-
-              const skewAngle = detectSkewAngle(cropCtx, cropW, cropH);
-              finalCanvas = cropCanvas;
-              if (Math.abs(skewAngle) >= 1 && Math.abs(skewAngle) <= 10) {
-                finalCanvas = rotateCanvas(cropCanvas, -skewAngle);
-              }
-              if (isOpenCvReady()) {
-                try {
-                  enhanceWarpedPage(finalCanvas);
-                } catch (err) {}
-              }
-              speak("Book detected and cropped. Extracting text now.", { force: true });
-            }
-          }
-
-          let finalDataUrl = dataUrl;
-          if (finalCanvas) {
-            finalDataUrl = finalCanvas.toDataURL("image/webp", 0.85);
-          } else {
-            console.log("No book bounding box detected in upload. Proceeding with full image OCR.");
-            if (isOpenCvReady()) {
-              try {
-                enhanceWarpedPage(tempCanvas);
-                finalDataUrl = tempCanvas.toDataURL("image/webp", 0.85);
-              } catch (err) {}
-            }
-            speak("No book detected. Extracting text from full image.", { force: true });
-          }
-
-          setCapturedImage(finalDataUrl);
-          setGuidance(FRIENDLY_MESSAGES[languages[0] || "eng"].captured);
-          runOcr(finalDataUrl);
-        };
-        img.src = dataUrl;
+        setCapturedImage(dataUrl);
+        setGuidance(FRIENDLY_MESSAGES[languages[0] || "eng"].captured);
+        runOcr(dataUrl);
       };
       reader.readAsDataURL(file);
     },
-    [speak, detector, detectBook, languages, runOcr],
+    [languages, runOcr],
   );
 
   const retryScan = useCallback(() => {
@@ -1667,7 +1551,7 @@ export default function BookScanner({ bookTitle, onTextExtracted, onPageCaptured
   }, [speak, mode]);
 
   const handleConvertToObjects = useCallback(async () => {
-    if (!docId || !extractedText) return;
+    if (!extractedText) return;
     setIsConvertingObjects(true);
     setStructuredObjects(null);
     try {
@@ -1676,7 +1560,7 @@ export default function BookScanner({ bookTitle, onTextExtracted, onPageCaptured
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          doc_id: docId,
+          doc_id: docId || "doc_1",
           extracted_text: extractedText,
           image_base64: capturedImage
         })
@@ -1684,7 +1568,7 @@ export default function BookScanner({ bookTitle, onTextExtracted, onPageCaptured
 
       if (!response.ok) throw new Error("Conversion failed");
       const data = await response.json();
-      setStructuredObjects(data.structured_objects);
+      setStructuredObjects(data.converted || data.structured_objects || []);
       speak("Conversion complete!", { force: true });
     } catch (err) {
       console.error("Objects conversion failed:", err);

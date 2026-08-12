@@ -214,4 +214,12 @@ public class VoiceAndStorageController {
             return ResponseEntity.status(500).body(Map.of("error", e.getMessage()));
         }
     }
+
+    @PostMapping("/api/pages/session")
+    public ResponseEntity<Map<String, Object>> createPageSession(@RequestBody Map<String, Object> request) {
+        Map<String, Object> response = new HashMap<>();
+        response.put("success", true);
+        response.put("sessionId", "session_" + System.currentTimeMillis());
+        return ResponseEntity.ok(response);
+    }
 }
