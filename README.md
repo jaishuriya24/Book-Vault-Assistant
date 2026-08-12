@@ -1,6 +1,6 @@
 <div align="center">
 
-# 📖 ReadEase / Book Vault
+# 📖 Book Vault
 ### *An Accessibility-First, AI-Powered Digital Reading Companion*
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -12,7 +12,7 @@
 [![Accessibility](https://img.shields.io/badge/A11y-Voice_&_Audio_Guided-brightgreen.svg)](#-accessibility-features)
 
 <p align="center">
-  <b>ReadEase</b> is an open-source, voice-navigated reading assistant specifically engineered for <b>blind, visually impaired, and hands-free users</b>. It combines real-time computer vision, voice direction, biometric facial authentication, and synchronized audio narration into a unified reading vault.
+  <b>Book-Vault</b> is an open-source, voice-navigated reading assistant specifically engineered for <b>blind, visually impaired, and hands-free users</b>. It combines real-time computer vision, voice direction, biometric facial authentication, and synchronized audio narration into a unified reading vault.
 </p>
 
 [Quick Start](#-quick-start) •
