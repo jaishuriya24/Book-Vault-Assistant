@@ -1,0 +1,55 @@
+{
+    "pages": [
+        {
+            "page_number": 1,
+            "file_name": "page_001.jpg",
+            "image_path": "D:\\book-vault\\Text-detector\\storage\\pages\\page_001.jpg",
+            "hash": "2d2b1a2c2a010429",
+            "text": "",
+            "timestamp": "2026-08-06 04:53:53"
+        },
+        {
+            "page_number": 2,
+            "file_name": "page_002.jpg",
+            "image_path": "storage\\pages\\page_002.jpg",
+            "hash": "9212825050707070",
+            "timestamp": "2026-08-06 12:11:31"
+        },
+        {
+            "page_number": 3,
+            "file_name": "page_003.jpg",
+            "image_path": "storage\\pages\\page_003.jpg",
+            "hash": "9410841414040c0c",
+            "timestamp": "2026-08-06 12:11:57"
+        },
+        {
+            "page_number": 4,
+            "file_name": "page_004.jpg",
+            "image_path": "storage\\pages\\page_004.jpg",
+            "hash": "002222a2c2a0a2a2",
+            "timestamp": "2026-08-06 12:14:54"
+        },
+        {
+            "page_number": 5,
+            "file_name": "page_005.jpg",
+            "image_path": "storage\\pages\\page_005.jpg",
+            "hash": "070f0e0e8e8c1818",
+            "timestamp": "2026-08-06 12:15:28"
+        },
+        {
+            "page_number": 6,
+            "file_name": "page_006.jpg",
+            "image_path": "storage\\pages\\page_006.jpg",
+            "hash": "83838bebe898bebc",
+            "timestamp": "2026-08-06 12:35:08"
+        },
+        {
+            "page_number": 7,
+            "file_name": "page_007.jpg",
+            "image_path": "C:\\Users\\jshur\\Documents\\Book-Vault-main\\Text-detector\\storage\\pages\\page_007.jpg",
+            "hash": "samplehash123",
+            "text": "This is sample extracted OCR text from page.",
+            "timestamp": "2026-08-08 17:43:21"
+        }
+    ]
+}

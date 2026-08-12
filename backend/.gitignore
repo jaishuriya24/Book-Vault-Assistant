@@ -1,0 +1,35 @@
+# ML models
+*.pt
+*.pb
+oramava_temp/models/objdet/
+
+# Java / Maven
+target/
+bin/
+.classpath
+.project
+.settings/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Node
+node_modules/
+dist/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+# ML models
+yolov8n.pt
+*.pt
+*.pth
+
+# TensorFlow.js models
+oramava_temp/models/objdet/
+**/tensorflowjs_model.pb
+**/group1-shard*

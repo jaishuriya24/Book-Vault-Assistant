@@ -1,0 +1,457 @@
+{
+  "name": "ReadEase Voice Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "readease-voice",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node_webhook",
+      "name": "ElevenLabs Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "notes": "ElevenLabs calls this webhook with the transcribed voice text from the blind user. Expected body: { \"text\": \"go to page 45\", \"session_id\": \"abc123\" }"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "x-api-key", "value": "={{ $credentials.httpHeaderAuth.value }}" },
+            { "name": "anthropic-version", "value": "2023-06-01" },
+            { "name": "content-type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"claude-haiku-4-5-20251001\",\n  \"max_tokens\": 256,\n  \"system\": \"You are an intent classifier for ReadEase, a book reading assistant for blind users.\\n\\nClassify the user voice command into EXACTLY one of these intents:\\n- navigate_page: user wants to go to a specific page (e.g. go to page 45, take me to page 10)\\n- find_book: user wants to find a book by title (e.g. find Harry Potter, where is the Alchemist)\\n- read_aloud: user wants text read out (e.g. read this, start reading, read from here)\\n- answer_question: user is asking about book content (e.g. what happened in chapter 2, who is the author)\\n- control: pause stop resume repeat commands\\n- unknown: none of the above\\n\\nRespond ONLY in this JSON format, nothing else:\\n{\\n  \\\"intent\\\": \\\"<intent_name>\\\",\\n  \\\"parameters\\\": {\\n    \\\"page_number\\\": null,\\n    \\\"book_title\\\": null,\\n    \\\"question\\\": null,\\n    \\\"control_action\\\": null\\n  }\\n}\\n\\nFill only the relevant parameter for the detected intent. Leave others as null.\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"{{ $json.body.text }}\"\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "node_intent_classify",
+      "name": "Claude Haiku — Intent Classifier",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [480, 300],
+      "notes": "Calls Anthropic API directly with claude-haiku-4-5-20251001. Add your Anthropic API key as a Header Auth credential named 'Anthropic API Key'. Returns JSON with intent + parameters."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse Claude's response and extract intent JSON\nconst content = $input.first().json.content[0].text;\nlet parsed;\ntry {\n  // Strip any accidental markdown fences\n  const clean = content.replace(/```json|```/g, '').trim();\n  parsed = JSON.parse(clean);\n} catch(e) {\n  parsed = { intent: 'unknown', parameters: { page_number: null, book_title: null, question: null, control_action: null } };\n}\n\n// Pass through original session_id and voice text too\nreturn [{\n  json: {\n    intent: parsed.intent,\n    parameters: parsed.parameters,\n    session_id: $('ElevenLabs Webhook').first().json.body.session_id || 'default',\n    original_text: $('ElevenLabs Webhook').first().json.body.text\n  }\n}];"
+      },
+      "id": "node_parse_intent",
+      "name": "Parse Intent JSON",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 300],
+      "notes": "Safely parses Claude's JSON response. Falls back to 'unknown' intent if parsing fails. Also carries session_id forward for stateful conversations."
+    },
+    {
+      "parameters": {
+        "rules": {
+          "rules": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": false },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "navigate_page",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "navigate_page"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": false },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "find_book",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "find_book"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": false },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "read_aloud",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "read_aloud"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": false },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "answer_question",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "answer_question"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": false },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "control",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "control"
+            }
+          ]
+        },
+        "options": { "fallbackOutput": "extra" }
+      },
+      "id": "node_switch",
+      "name": "Switch — Route by Intent",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [960, 300],
+      "notes": "Routes to one of 5 branches: navigate_page, find_book, read_aloud, answer_question, control. Fallback (unknown) goes to extra output."
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.READEASE_BACKEND_URL }}/detect-page",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"session_id\": \"{{ $json.session_id }}\",\n  \"target_page\": {{ $json.parameters.page_number }}\n}",
+        "options": { "timeout": 10000 }
+      },
+      "id": "node_detect_page_api",
+      "name": "FastAPI — /detect-page",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1200, 100],
+      "notes": "Calls your FastAPI /detect-page endpoint. Expected response: { current_page: 12, target_page: 45, direction: 'forward' | 'backward' | 'found' }"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "x-api-key", "value": "={{ $credentials.httpHeaderAuth.value }}" },
+            { "name": "anthropic-version", "value": "2023-06-01" },
+            { "name": "content-type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"claude-haiku-4-5-20251001\",\n  \"max_tokens\": 100,\n  \"system\": \"You are a navigation guide for a blind user holding a physical book. Give a short, clear audio instruction (1 sentence max). Never use formatting or bullet points. Examples: 'You are on page 12, keep flipping forward.' / 'You have reached page 45, stop flipping.'\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Target page: {{ $('Switch — Route by Intent').first().json.parameters.page_number }}. Current detected page: {{ $json.current_page }}. Direction: {{ $json.direction }}. Generate the audio instruction.\"\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "node_navigate_llm",
+      "name": "Claude — Navigate Guidance",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1440, 100],
+      "notes": "Generates a 1-sentence spoken navigation instruction based on current vs target page."
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.READEASE_BACKEND_URL }}/find-book",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"session_id\": \"{{ $('Parse Intent JSON').first().json.session_id }}\",\n  \"title\": \"{{ $('Parse Intent JSON').first().json.parameters.book_title }}\"\n}",
+        "options": { "timeout": 10000 }
+      },
+      "id": "node_find_book_api",
+      "name": "FastAPI — /find-book",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1200, 240],
+      "notes": "Calls your FastAPI /find-book endpoint. Expected response: { found: true, title: 'Harry Potter', location: 'Shelf 2, 3rd from left' } or { found: false }"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "x-api-key", "value": "={{ $credentials.httpHeaderAuth.value }}" },
+            { "name": "anthropic-version", "value": "2023-06-01" },
+            { "name": "content-type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"claude-haiku-4-5-20251001\",\n  \"max_tokens\": 120,\n  \"system\": \"You are a library assistant for a blind user. Give a short 1-2 sentence spoken instruction on where to find the book. No formatting. If not found say: I could not find that book in the library. Please ask a staff member for help.\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Book search result: {{ JSON.stringify($json) }}. Generate the spoken response.\"\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "node_find_book_llm",
+      "name": "Claude — Find Book Response",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1440, 240],
+      "notes": "Converts the /find-book API response into a natural spoken sentence for the blind user."
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.READEASE_BACKEND_URL }}/ocr-text",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"session_id\": \"{{ $('Parse Intent JSON').first().json.session_id }}\"\n}",
+        "options": { "timeout": 15000 }
+      },
+      "id": "node_ocr_read_api",
+      "name": "FastAPI — /ocr-text (read)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1200, 380],
+      "notes": "Gets current page OCR text from FastAPI. Expected response: { text: 'The extracted page text here...', page_number: 12 }"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "x-api-key", "value": "={{ $credentials.httpHeaderAuth.value }}" },
+            { "name": "anthropic-version", "value": "2023-06-01" },
+            { "name": "content-type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"claude-haiku-4-5-20251001\",\n  \"max_tokens\": 1024,\n  \"system\": \"You are a reading assistant for a blind user. Read the following extracted text naturally, as if speaking to someone listening carefully. Correct obvious OCR errors (e.g. l2 becomes 12, rn becomes m). Do not add commentary. Just read the text cleanly.\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"{{ $json.text }}\"\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "node_read_aloud_llm",
+      "name": "Claude — Clean and Read Text",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1440, 380],
+      "notes": "Cleans OCR noise and returns clean text for ElevenLabs TTS to speak aloud."
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.READEASE_BACKEND_URL }}/ocr-text",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"session_id\": \"{{ $('Parse Intent JSON').first().json.session_id }}\"\n}",
+        "options": { "timeout": 15000 }
+      },
+      "id": "node_ocr_qa_api",
+      "name": "FastAPI — /ocr-text (Q&A)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1200, 520],
+      "notes": "Gets current page OCR text to use as context for answering the user's question."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "x-api-key", "value": "={{ $credentials.httpHeaderAuth.value }}" },
+            { "name": "anthropic-version", "value": "2023-06-01" },
+            { "name": "content-type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"claude-haiku-4-5-20251001\",\n  \"max_tokens\": 256,\n  \"system\": \"You are a helpful reading assistant for a blind user. Answer in 2-3 short sentences max because this will be spoken aloud. No bullet points or formatting. If the answer is not in the provided text say: I could not find that in the current page. Try asking me to read more of the book.\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Book text context: {{ $json.text }}\\n\\nUser question: {{ $('Parse Intent JSON').first().json.parameters.question }}\"\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "node_qa_llm",
+      "name": "Claude — Answer Question",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1440, 520],
+      "notes": "Uses current page OCR text as context to answer the user's question about the book."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Handle control commands: pause, resume, stop, repeat\nconst action = $json.parameters.control_action || $json.original_text.toLowerCase();\nlet response = '';\n\nif (action.includes('pause') || action.includes('wait') || action.includes('stop')) {\n  response = 'Pausing now.';\n} else if (action.includes('resume') || action.includes('continue') || action.includes('start')) {\n  response = 'Resuming reading.';\n} else if (action.includes('repeat') || action.includes('again') || action.includes('go back')) {\n  response = 'Repeating from where I left off.';\n} else {\n  response = 'Got it.';\n}\n\nreturn [{ json: { response_text: response, action: action } }];"
+      },
+      "id": "node_control",
+      "name": "Control Command Handler",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 660],
+      "notes": "Handles pause/resume/stop/repeat without calling LLM — instant response, no latency."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Collect response text from whichever branch ran\n// Try each possible LLM node output\nlet responseText = 'Sorry, I did not understand that. Please try again.';\n\ntry {\n  // Each branch outputs from a different node — check which has data\n  const navigateOut = $('Claude — Navigate Guidance').all();\n  const findBookOut = $('Claude — Find Book Response').all();\n  const readAloudOut = $('Claude — Clean and Read Text').all();\n  const qaOut = $('Claude — Answer Question').all();\n  const controlOut = $('Control Command Handler').all();\n\n  if (navigateOut.length > 0) {\n    responseText = navigateOut[0].json.content[0].text;\n  } else if (findBookOut.length > 0) {\n    responseText = findBookOut[0].json.content[0].text;\n  } else if (readAloudOut.length > 0) {\n    responseText = readAloudOut[0].json.content[0].text;\n  } else if (qaOut.length > 0) {\n    responseText = qaOut[0].json.content[0].text;\n  } else if (controlOut.length > 0) {\n    responseText = controlOut[0].json.response_text;\n  }\n} catch(e) {\n  responseText = 'Something went wrong. Please try again.';\n}\n\nreturn [{ json: { response_text: responseText } }];"
+      },
+      "id": "node_merge_response",
+      "name": "Merge — Extract Response Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1700, 380],
+      "notes": "Collects the text output from whichever branch ran and normalizes it into { response_text: '...' } for the TTS node."
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.elevenlabs.io/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "xi-api-key", "value": "={{ $env.ELEVENLABS_API_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": \"{{ $json.response_text }}\",\n  \"model_id\": \"eleven_monolingual_v1\",\n  \"voice_settings\": {\n    \"stability\": 0.5,\n    \"similarity_boost\": 0.75\n  }\n}",
+        "options": { "response": { "response": { "responseFormat": "file", "outputPropertyName": "audio" } } }
+      },
+      "id": "node_tts",
+      "name": "ElevenLabs TTS",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1940, 380],
+      "notes": "Converts response text to speech using ElevenLabs. Voice ID '21m00Tcm4TlvDq8ikWAM' is Rachel (calm, clear). Change voice ID to any ElevenLabs voice you prefer."
+    },
+
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"text\": \"{{ $('Merge — Extract Response Text').first().json.response_text }}\",\n  \"audio_available\": true\n}",
+        "options": {}
+      },
+      "id": "node_respond",
+      "name": "Respond to ElevenLabs",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [2180, 380],
+      "notes": "Returns the response text back to ElevenLabs. ElevenLabs uses this to speak the response to the user. If you're using ElevenLabs-orchestrated mode, return just { text: '...' }."
+    },
+
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"text\": \"Sorry, I did not understand that command. Please try saying it again.\"\n}",
+        "options": {}
+      },
+      "id": "node_unknown_fallback",
+      "name": "Unknown Intent Fallback",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1200, 800],
+      "notes": "Handles unknown or unclassified intents gracefully."
+    }
+  ],
+
+  "connections": {
+    "ElevenLabs Webhook": {
+      "main": [[{ "node": "Claude Haiku — Intent Classifier", "type": "main", "index": 0 }]]
+    },
+    "Claude Haiku — Intent Classifier": {
+      "main": [[{ "node": "Parse Intent JSON", "type": "main", "index": 0 }]]
+    },
+    "Parse Intent JSON": {
+      "main": [[{ "node": "Switch — Route by Intent", "type": "main", "index": 0 }]]
+    },
+    "Switch — Route by Intent": {
+      "main": [
+        [{ "node": "FastAPI — /detect-page", "type": "main", "index": 0 }],
+        [{ "node": "FastAPI — /find-book", "type": "main", "index": 0 }],
+        [{ "node": "FastAPI — /ocr-text (read)", "type": "main", "index": 0 }],
+        [{ "node": "FastAPI — /ocr-text (Q&A)", "type": "main", "index": 0 }],
+        [{ "node": "Control Command Handler", "type": "main", "index": 0 }],
+        [{ "node": "Unknown Intent Fallback", "type": "main", "index": 0 }]
+      ]
+    },
+    "FastAPI — /detect-page": {
+      "main": [[{ "node": "Claude — Navigate Guidance", "type": "main", "index": 0 }]]
+    },
+    "Claude — Navigate Guidance": {
+      "main": [[{ "node": "Merge — Extract Response Text", "type": "main", "index": 0 }]]
+    },
+    "FastAPI — /find-book": {
+      "main": [[{ "node": "Claude — Find Book Response", "type": "main", "index": 0 }]]
+    },
+    "Claude — Find Book Response": {
+      "main": [[{ "node": "Merge — Extract Response Text", "type": "main", "index": 0 }]]
+    },
+    "FastAPI — /ocr-text (read)": {
+      "main": [[{ "node": "Claude — Clean and Read Text", "type": "main", "index": 0 }]]
+    },
+    "Claude — Clean and Read Text": {
+      "main": [[{ "node": "Merge — Extract Response Text", "type": "main", "index": 0 }]]
+    },
+    "FastAPI — /ocr-text (Q&A)": {
+      "main": [[{ "node": "Claude — Answer Question", "type": "main", "index": 0 }]]
+    },
+    "Claude — Answer Question": {
+      "main": [[{ "node": "Merge — Extract Response Text", "type": "main", "index": 0 }]]
+    },
+    "Control Command Handler": {
+      "main": [[{ "node": "Merge — Extract Response Text", "type": "main", "index": 0 }]]
+    },
+    "Merge — Extract Response Text": {
+      "main": [[{ "node": "ElevenLabs TTS", "type": "main", "index": 0 }]]
+    },
+    "ElevenLabs TTS": {
+      "main": [[{ "node": "Respond to ElevenLabs", "type": "main", "index": 0 }]]
+    }
+  },
+
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+
+  "staticData": null,
+  "tags": ["readease", "voice-agent", "blind-assistant"],
+  "triggerCount": 1,
+  "updatedAt": "2026-07-14T00:00:00.000Z",
+  "versionId": "readease-v1"
+}

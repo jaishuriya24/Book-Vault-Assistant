@@ -1,0 +1,28 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic[email]==2.9.2
+httpx==0.27.2
+google-generativeai==0.8.3
+python-dotenv==1.0.1
+
+# Database
+sqlalchemy>=2.0.35
+asyncpg>=0.30.0
+
+# Auth
+passlib[bcrypt]==1.7.4
+python-jose[cryptography]==3.3.0
+python-multipart==0.0.9
+
+# Vision pipeline (core — no compiler needed)
+numpy
+opencv-python-headless
+pytesseract==0.3.13
+
+# Optional: YOLO-based book detection (installs PyTorch ~2 GB).
+# The app runs fine without it — detector.py falls back to the full frame.
+# Install separately once the above are working:
+#   pip install ultralytics
+# ultralytics>=8.3.0
+python-doctr
+pymongo>=4.0.0

@@ -1,0 +1,5 @@
+{
+  "appId": "com.yourcompany.bookvault",
+  "appName": "Book Vault",
+  "webDir": "dist"
+}

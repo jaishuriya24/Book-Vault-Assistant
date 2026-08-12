@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" href="/Logo-book.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Book Vault — Your personal digital reading companion. Scan, upload, organize, and read your books with voice-guided OCR and text-to-speech." />
+    <meta name="theme-color" content="#1a2332" />
+    <meta property="og:title" content="Book Vault" />
+    <meta property="og:description" content="Your personal digital reading companion with voice-guided book scanning." />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="/Logo-book.png" />
+    <title>Book Vault — Your Personal Reading Companion</title>
+    <!-- Load TensorFlow.js and COCO-SSD from CDN to bypass Vite bundling issues -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+    <!-- Load OpenCV.js for page corner detection and perspective warping -->
+    <script src="https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.9.0-release.2/dist/opencv.min.js" defer></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
