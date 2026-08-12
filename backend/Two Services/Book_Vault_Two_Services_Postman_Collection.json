@@ -1,12 +1,12 @@
 {
   "info": {
-    "name": "Book Vault Microservices (Auth & Book Services)",
-    "description": "Postman Collection for Book Vault Application Spring Boot Auth Service (Port 8081) and Book Service (Port 8082).",
+    "name": "Book Vault Complete Microservices Collection",
+    "description": "Comprehensive Postman Collection containing all 28 working endpoints for Auth Service (Port 8081) and Book/Voice/OCR Service (Port 8082).",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "item": [
     {
-      "name": "1. Auth Service (Port 8081)",
+      "name": "1. Auth & User Management (Port 8081)",
       "item": [
         {
           "name": "Register User",
@@ -69,7 +69,67 @@
           }
         },
         {
-          "name": "Get User Profile (/api/users/me)",
+          "name": "Register Face Biometric Vector",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Jane Reader\",\n  \"email\": \"jane@bookvault.com\",\n  \"faceDescriptor\": [0.012, -0.045, 0.088, 0.011, 0.056]\n}"
+            },
+            "url": {
+              "raw": "http://localhost:8081/api/auth/face-register",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8081",
+              "path": ["api", "auth", "face-register"]
+            }
+          }
+        },
+        {
+          "name": "Face Recognition Login",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"faceDescriptor\": [0.012, -0.045, 0.088, 0.011, 0.056]\n}"
+            },
+            "url": {
+              "raw": "http://localhost:8081/api/auth/face-login",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8081",
+              "path": ["api", "auth", "face-login"]
+            }
+          }
+        },
+        {
+          "name": "Get Login Audit History",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:8081/api/auth/login-history",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8081",
+              "path": ["api", "auth", "login-history"]
+            }
+          }
+        },
+        {
+          "name": "Get Current User Profile (/api/users/me)",
           "request": {
             "auth": {
               "type": "bearer",
@@ -91,14 +151,70 @@
               "path": ["api", "users", "me"]
             }
           }
+        },
+        {
+          "name": "Get Reader Users List",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:8081/api/users/readers",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8081",
+              "path": ["api", "users", "readers"]
+            }
+          }
+        },
+        {
+          "name": "Get Admin Login History Table",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:8081/api/users/admin-logins",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8081",
+              "path": ["api", "users", "admin-logins"]
+            }
+          }
+        },
+        {
+          "name": "Delete Biometric User",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:8081/api/users/biometric/1",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8081",
+              "path": ["api", "users", "biometric", "1"]
+            }
+          }
+        },
+        {
+          "name": "Clear All Biometric Users",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:8081/api/users/clear-all",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8081",
+              "path": ["api", "users", "clear-all"]
+            }
+          }
         }
       ]
     },
     {
-      "name": "2. Book Service (Port 8082)",
+      "name": "2. Book Management (Port 8082)",
       "item": [
         {
-          "name": "List User Books",
+          "name": "List All Books",
           "request": {
             "auth": {
               "type": "bearer",
@@ -295,6 +411,234 @@
               "host": ["localhost"],
               "port": "8082",
               "path": ["api", "books", "1"]
+            }
+          }
+        },
+        {
+          "name": "Get Book Pages",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:8082/api/books/1/pages",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8082",
+              "path": ["api", "books", "1", "pages"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Voice, OCR & Scanning Services (Port 8082)",
+      "item": [
+        {
+          "name": "Parse Voice Intent (Gemini AI)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userInput\": \"Turn to page 15\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:8082/api/parse-intent",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8082",
+              "path": ["api", "parse-intent"]
+            }
+          }
+        },
+        {
+          "name": "Save Page Base64 & Extracted Text",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"bookId\": 1,\n  \"pageNumber\": 1,\n  \"imageBase64\": \"data:image/jpeg;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\",\n  \"text\": \"Extracted text content from scanner...\",\n  \"dhash\": \"a1b2c3d4\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:8082/api/save-page",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8082",
+              "path": ["api", "save-page"]
+            }
+          }
+        },
+        {
+          "name": "OCR Image File Upload",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": []
+                }
+              ]
+            },
+            "url": {
+              "raw": "http://localhost:8082/api/ocr/extract",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8082",
+              "path": ["api", "ocr", "extract"]
+            }
+          }
+        },
+        {
+          "name": "Get Text Detector Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:8082/api/books/detector-status",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8082",
+              "path": ["api", "books", "detector-status"]
+            }
+          }
+        },
+        {
+          "name": "Capture Page Detection Frame",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"imageBase64\": \"data:image/jpeg;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:8082/api/books/capture",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8082",
+              "path": ["api", "books", "capture"]
+            }
+          }
+        },
+        {
+          "name": "Webcam Live Capture Frame",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:8082/api/books/webcam-capture",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8082",
+              "path": ["api", "books", "webcam-capture"]
+            }
+          }
+        },
+        {
+          "name": "Convert Object Detection Predictions",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"predictions\": []\n}"
+            },
+            "url": {
+              "raw": "http://localhost:8082/api/books/convert-objects",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8082",
+              "path": ["api", "books", "convert-objects"]
+            }
+          }
+        },
+        {
+          "name": "Start Page Reading Session",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"bookId\": 1\n}"
+            },
+            "url": {
+              "raw": "http://localhost:8082/api/pages/session",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8082",
+              "path": ["api", "pages", "session"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Bookmarks Management (Port 8082)",
+      "item": [
+        {
+          "name": "List Bookmarks",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:8082/api/bookmarks",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8082",
+              "path": ["api", "bookmarks"]
+            }
+          }
+        },
+        {
+          "name": "Create Bookmark",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": \"1\",\n  \"bookId\": 1,\n  \"pageNumber\": 5,\n  \"charPosition\": 120,\n  \"note\": \"Important paragraph note\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:8082/api/bookmarks",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8082",
+              "path": ["api", "bookmarks"]
             }
           }
         }
