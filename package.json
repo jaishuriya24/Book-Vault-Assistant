@@ -50,9 +50,17 @@
     "oxlint": "^1.69.0",
     "vite": "^8.1.0"
   },
-  "description": "",
-  "main": "vite.config.js",
-  "keywords": [],
-  "author": "",
-  "license": "ISC"
+  "description": "Accessibility-first digital reading companion with voice guidance & biometric face authentication",
+  "keywords": [
+    "accessibility",
+    "a11y",
+    "reading-assistant",
+    "blind-support",
+    "facial-biometrics",
+    "voice-guided-scan",
+    "react19",
+    "tensorflowjs"
+  ],
+  "author": "Jaishuriya",
+  "license": "MIT"
 }
