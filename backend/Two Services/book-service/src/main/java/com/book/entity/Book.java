@@ -4,7 +4,7 @@ import jakarta.persistence.*;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "books")
+@Table(name = "booksaved")
 public class Book {
 
     @Id
@@ -12,8 +12,11 @@ public class Book {
     @Column(name = "id")
     private Long id;
 
-    @Column(name = "user_id")
-    private Long userId;
+    @Column(name = "user_id", length = 100)
+    private String userId = "Guest";
+
+    @Column(name = "user_name", length = 150)
+    private String userName = "Reader";
 
     @Column(name = "title", nullable = false, length = 500)
     private String title;
@@ -38,6 +41,9 @@ public class Book {
     @Column(name = "last_position_char")
     private Integer lastPositionChar = 0;
 
+    @Column(name = "page_count")
+    private Integer pageCount = 1;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt = LocalDateTime.now();
 
@@ -53,8 +59,11 @@ public class Book {
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
 
-    public Long getUserId() { return userId; }
-    public void setUserId(Long userId) { this.userId = userId; }
+    public String getUserId() { return userId; }
+    public void setUserId(String userId) { this.userId = userId; }
+
+    public String getUserName() { return userName; }
+    public void setUserName(String userName) { this.userName = userName; }
 
     public String getTitle() { return title; }
     public void setTitle(String title) { this.title = title; }
@@ -77,6 +86,9 @@ public class Book {
     public Integer getLastPositionChar() { return lastPositionChar; }
     public void setLastPositionChar(Integer lastPositionChar) { this.lastPositionChar = lastPositionChar; }
 
+    public Integer getPageCount() { return pageCount; }
+    public void setPageCount(Integer pageCount) { this.pageCount = pageCount; }
+
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
 
@@ -85,4 +97,7 @@ public class Book {
 
     public String getCoverImage() { return coverImage; }
     public void setCoverImage(String coverImage) { this.coverImage = coverImage; }
+
+    public String getCover() { return coverImage; }
 }
+

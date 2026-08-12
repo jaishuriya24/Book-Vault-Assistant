@@ -34,7 +34,7 @@ export default function SignUp() {
   const [cameraStatus, setCameraStatus] = useState("Camera active. Looking for your face...");
   const [isRegistering, setIsRegistering] = useState(false);
 
-  const authApiUrl = import.meta.env.VITE_SPRING_BOOT_AUTH_URL || import.meta.env.VITE_SERVER_URL || "http://localhost:3001";
+  const authApiUrl = import.meta.env.VITE_SPRING_BOOT_AUTH_URL || import.meta.env.VITE_SERVER_URL || "http://localhost:8081";
 
   // Audio Earcon / Chime for blind users
   const playTone = useCallback((freq = 520, duration = 0.15) => {

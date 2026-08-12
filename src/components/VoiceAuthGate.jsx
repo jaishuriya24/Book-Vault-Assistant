@@ -1,6 +1,6 @@
 import { useVoiceAuthFlow, AUTH_STATE } from "../voice/useVoiceAuthFlow";
 
-const authApiUrl = import.meta.env.VITE_SPRING_BOOT_AUTH_URL || import.meta.env.VITE_SERVER_URL || "http://localhost:3001";
+const authApiUrl = import.meta.env.VITE_SPRING_BOOT_AUTH_URL || import.meta.env.VITE_SERVER_URL || "http://localhost:8081";
 
 async function loginApi(email, password) {
   try {

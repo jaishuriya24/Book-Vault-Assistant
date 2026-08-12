@@ -180,10 +180,9 @@ export default function DoraemonMascot() {
 
     setState("typing");
     setDialogText("...");
-    setShowBubble(true);
-
+    const apiUrl = import.meta.env.VITE_SPRING_BOOT_API_URL || import.meta.env.VITE_SERVER_URL || "http://localhost:8082";
     try {
-      const response = await fetch("http://localhost:3001/api/parse-intent", {
+      const response = await fetch(`${apiUrl}/api/parse-intent`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ userInput: command })

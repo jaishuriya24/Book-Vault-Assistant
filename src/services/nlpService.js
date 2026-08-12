@@ -1,7 +1,7 @@
 /**
  * nlpService.js — Multilingual Navigation + Language Detection
  * =============================================================
- * Calls /api/parse-intent (Gemini 1.5 Flash on server.js) and returns
+ * Calls /api/parse-intent (Gemini 1.5 Flash on Spring Boot) and returns
  * a structured result with language, intent, navigation target, and
  * a natural-language response in the user's own language.
  *
@@ -14,7 +14,7 @@
  *   executeIntent(result, navigate);   // auto-navigates using react-router
  */
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:3001';
+const SERVER_URL = import.meta.env.VITE_SPRING_BOOT_API_URL || import.meta.env.VITE_SERVER_URL || 'http://localhost:8082';
 
 // ── Route map: intent "navigate" value → react-router-dom path ─────────────
 const ROUTE_MAP = {

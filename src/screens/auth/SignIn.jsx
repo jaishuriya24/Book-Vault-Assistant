@@ -38,7 +38,7 @@ export default function SignIn() {
   const [cameraError, setCameraError] = useState(false);
   const [hasFaceInFrame, setHasFaceInFrame] = useState(false);
 
-  const authApiUrl = import.meta.env.VITE_SPRING_BOOT_AUTH_URL || import.meta.env.VITE_SERVER_URL || "http://localhost:3001";
+  const authApiUrl = import.meta.env.VITE_SPRING_BOOT_AUTH_URL || import.meta.env.VITE_SERVER_URL || "http://localhost:8081";
 
   // Audio Earcon / Chime for blind users using Web Audio API
   const playTone = useCallback((freq = 520, duration = 0.15) => {

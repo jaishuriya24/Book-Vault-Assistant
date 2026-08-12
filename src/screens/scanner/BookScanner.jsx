@@ -517,7 +517,8 @@ export default function BookScanner({ bookTitle, onTextExtracted, onPageCaptured
 
   // Initialize Spring Boot MySQL session for contiguous page management
   useEffect(() => {
-    fetch("http://localhost:8080/api/pages/session", {
+    const backendUrl = import.meta.env.VITE_SPRING_BOOT_API_URL || import.meta.env.VITE_SERVER_URL || "http://localhost:8082";
+    fetch(`${backendUrl}/api/pages/session`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ title: bookTitle || "Untitled Book" })
@@ -531,7 +532,7 @@ export default function BookScanner({ bookTitle, onTextExtracted, onPageCaptured
         }
       })
       .catch((err) => {
-        console.warn("Spring Boot scanner backend not reachable on 8080:", err.message);
+        console.warn("Spring Boot scanner backend not reachable on 8082:", err.message);
         setBackendStatus("offline");
       });
   }, [bookTitle]);
@@ -1082,7 +1083,8 @@ export default function BookScanner({ bookTitle, onTextExtracted, onPageCaptured
             if (!blob) return;
             const formData = new FormData();
             formData.append("file", blob, `page_${newPageNum}.jpg`);
-            const uploadRes = await fetch(`http://localhost:8080/api/pages/${backendSessionId}/upload?sharpness=${Math.round(laplacianSharpness)}&brightness=${Math.round(clarityScore)}`, {
+            const springApiUrl = import.meta.env.VITE_SPRING_BOOT_API_URL || import.meta.env.VITE_SERVER_URL || "http://localhost:8082";
+            const uploadRes = await fetch(`${springApiUrl}/api/pages/${backendSessionId}/upload?sharpness=${Math.round(laplacianSharpness)}&brightness=${Math.round(clarityScore)}`, {
               method: "POST",
               body: formData,
             });
@@ -1121,7 +1123,8 @@ export default function BookScanner({ bookTitle, onTextExtracted, onPageCaptured
     if (e) e.stopPropagation();
     if (backendSessionId) {
       try {
-        await fetch(`http://localhost:8080/api/pages/${backendSessionId}/${pageNumberToDelete}`, {
+        const springApiUrl = import.meta.env.VITE_SPRING_BOOT_API_URL || import.meta.env.VITE_SERVER_URL || "http://localhost:8082";
+        await fetch(`${springApiUrl}/api/pages/${backendSessionId}/${pageNumberToDelete}`, {
           method: "DELETE"
         });
       } catch (err) {
@@ -1668,7 +1671,7 @@ export default function BookScanner({ bookTitle, onTextExtracted, onPageCaptured
     setIsConvertingObjects(true);
     setStructuredObjects(null);
     try {
-      const springApiUrl = import.meta.env.VITE_SPRING_BOOT_API_URL || import.meta.env.VITE_SERVER_URL || "http://localhost:3001";
+      const springApiUrl = import.meta.env.VITE_SPRING_BOOT_API_URL || import.meta.env.VITE_SERVER_URL || "http://localhost:8082";
       const response = await fetch(`${springApiUrl}/api/books/convert-objects`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

@@ -122,4 +122,24 @@ public class UserController {
 
         return ResponseEntity.ok(result);
     }
+
+    @org.springframework.web.bind.annotation.DeleteMapping("/biometric/{id}")
+    public ResponseEntity<?> deleteBiometricUser(@org.springframework.web.bind.annotation.PathVariable Long id) {
+        try {
+            appUserRepository.deleteById(id);
+            return ResponseEntity.ok(Map.of("success", true, "deletedId", id.toString()));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @org.springframework.web.bind.annotation.DeleteMapping("/clear-all")
+    public ResponseEntity<?> clearAllBiometricUsers() {
+        try {
+            appUserRepository.deleteByFaceDescriptorIsNotNull();
+            return ResponseEntity.ok(Map.of("success", true, "message", "All biometric users cleared"));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("error", e.getMessage()));
+        }
+    }
 }

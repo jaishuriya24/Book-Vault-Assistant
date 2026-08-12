@@ -121,7 +121,7 @@ export default function App() {
       setBooks(cleanedStored);
 
       // Connect React to Java Spring Boot & MySQL Database API
-      const springApiUrl = import.meta.env.VITE_SPRING_BOOT_API_URL || import.meta.env.VITE_SERVER_URL || "http://localhost:3001";
+      const springApiUrl = import.meta.env.VITE_SPRING_BOOT_API_URL || import.meta.env.VITE_SERVER_URL || "http://localhost:8082";
       fetch(`${springApiUrl}/api/books`)
         .then((res) => res.json())
         .then((data) => {
@@ -248,7 +248,7 @@ export default function App() {
       setBooks(updated);
 
       // Save to Java Spring Boot Database (MySQL)
-      const springApiUrl = import.meta.env.VITE_SPRING_BOOT_API_URL || import.meta.env.VITE_SERVER_URL || "http://localhost:3001";
+      const springApiUrl = import.meta.env.VITE_SPRING_BOOT_API_URL || import.meta.env.VITE_SERVER_URL || "http://localhost:8082";
       console.log("POSTing to Spring Boot MySQL backend:", `${springApiUrl}/api/books`);
       fetch(`${springApiUrl}/api/books`, {
         method: "POST",
@@ -360,7 +360,7 @@ export default function App() {
       setBooks(updated);
 
       // Sync Rename to MySQL Database
-      const springApiUrl = import.meta.env.VITE_SPRING_BOOT_API_URL || import.meta.env.VITE_SERVER_URL || "http://localhost:3001";
+      const springApiUrl = import.meta.env.VITE_SPRING_BOOT_API_URL || import.meta.env.VITE_SERVER_URL || "http://localhost:8082";
       fetch(`${springApiUrl}/api/books/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -380,7 +380,7 @@ export default function App() {
         setBooks(updated);
 
         // Sync Cover to MySQL Database
-        const springApiUrl = import.meta.env.VITE_SPRING_BOOT_API_URL || import.meta.env.VITE_SERVER_URL || "http://localhost:3001";
+        const springApiUrl = import.meta.env.VITE_SPRING_BOOT_API_URL || import.meta.env.VITE_SERVER_URL || "http://localhost:8082";
         fetch(`${springApiUrl}/api/books/${editingCoverId}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
@@ -412,7 +412,7 @@ export default function App() {
       setBooks(updated);
 
       // Sync Delete to MySQL Database
-      const springApiUrl = import.meta.env.VITE_SPRING_BOOT_API_URL || import.meta.env.VITE_SERVER_URL || "http://localhost:3001";
+      const springApiUrl = import.meta.env.VITE_SPRING_BOOT_API_URL || import.meta.env.VITE_SERVER_URL || "http://localhost:8082";
       fetch(`${springApiUrl}/api/books/${id}`, {
         method: "DELETE",
       }).catch(err => console.error("MySQL delete sync error:", err));

@@ -41,13 +41,13 @@ export default function FaceLogin() {
   const regEmailRef = useRef("");
   const isScanningRef = useRef(false);
 
-  const authApiUrl = import.meta.env.VITE_SPRING_BOOT_AUTH_URL || import.meta.env.VITE_SERVER_URL || "http://localhost:3001";
+  const authApiUrl = import.meta.env.VITE_SPRING_BOOT_AUTH_URL || import.meta.env.VITE_SERVER_URL || "http://localhost:8081";
 
   // Multi-backend resilient API caller
   const callAuthApi = useCallback(async (path, method = "GET", body = null) => {
     const urls = [
       authApiUrl,
-      "http://localhost:3001",
+      "http://localhost:8081",
     ].filter((v, i, a) => v && a.indexOf(v) === i);
 
     for (const base of urls) {

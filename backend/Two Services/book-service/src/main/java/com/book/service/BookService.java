@@ -19,12 +19,15 @@ public class BookService {
         this.bookRepository = bookRepository;
     }
 
-    public Book createBook(BookRequest request, Long userId) {
+    public Book createBook(BookRequest request, String userId) {
         Book book = new Book();
-        book.setUserId(userId);
+        book.setUserId(userId != null ? userId : "Guest");
+        book.setUserName("Reader");
         book.setTitle(request.getTitle());
         book.setLanguage(request.getLanguage() != null ? request.getLanguage() : "eng");
-        book.setFullText(request.getFullText() != null ? request.getFullText() : "");
+        String txt = request.getFullText() != null ? request.getFullText() : (request.getContent() != null ? request.getContent() : "");
+        book.setFullText(txt);
+        book.setContent(txt);
         book.setSource(request.getSource() != null ? request.getSource() : "manual");
         book.setCoverImage(request.getCoverImage());
         book.setLastPositionChar(0);
@@ -32,23 +35,26 @@ public class BookService {
         return bookRepository.save(book);
     }
 
-    public List<Book> getUserBooks(Long userId) {
-        return bookRepository.findByUserIdOrderByCreatedAtDesc(userId);
+    public List<Book> getAllBooks() {
+        return bookRepository.findAllByOrderByIdDesc();
     }
 
-    public Optional<Book> getBookById(Long id, Long userId) {
-        Optional<Book> book = bookRepository.findByIdAndUserId(id, userId);
-        if (book.isEmpty()) {
-            return bookRepository.findById(id);
+    public List<Book> getUserBooks(String userId) {
+        if (userId == null || "Guest".equalsIgnoreCase(userId)) {
+            return getAllBooks();
         }
-        return book;
+        return bookRepository.findByUserIdOrderByIdDesc(userId);
     }
 
-    public List<Book> searchBooks(Long userId, String query) {
+    public Optional<Book> getBookById(Long id) {
+        return bookRepository.findById(id);
+    }
+
+    public List<Book> searchBooks(String query) {
         if (query == null || query.isBlank()) {
-            return getUserBooks(userId);
+            return getAllBooks();
         }
-        return bookRepository.searchBooks(userId, query);
+        return bookRepository.searchBooks(query);
     }
 
     public Book updateBook(Long id, BookRequest request, Long userId) {

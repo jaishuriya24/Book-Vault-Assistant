@@ -10,12 +10,14 @@ import java.util.Optional;
 
 public interface BookRepository extends JpaRepository<Book, Long> {
 
-    List<Book> findByUserIdOrderByCreatedAtDesc(Long userId);
+    List<Book> findAllByOrderByIdDesc();
 
-    Optional<Book> findByIdAndUserId(Long id, Long userId);
+    List<Book> findByUserIdOrderByIdDesc(String userId);
 
-    @Query(value = "SELECT * FROM books WHERE user_id = :userId AND " +
+    Optional<Book> findByIdAndUserId(Long id, String userId);
+
+    @Query(value = "SELECT * FROM booksaved WHERE " +
                    "(LOWER(title) LIKE LOWER(CONCAT('%', :query, '%')) OR " +
                    "LOWER(full_text) LIKE LOWER(CONCAT('%', :query, '%')))", nativeQuery = true)
-    List<Book> searchBooks(@Param("userId") Long userId, @Param("query") String query);
+    List<Book> searchBooks(@Param("query") String query);
 }

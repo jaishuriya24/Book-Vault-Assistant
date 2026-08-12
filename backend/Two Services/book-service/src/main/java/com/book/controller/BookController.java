@@ -28,34 +28,28 @@ public class BookController {
     }
 
     @GetMapping
-    public ResponseEntity<List<Book>> listBooks(@AuthenticationPrincipal UserPrincipal user) {
-        List<Book> books = bookService.getUserBooks(resolveUserId(user));
+    public ResponseEntity<List<Book>> listBooks() {
+        List<Book> books = bookService.getAllBooks();
         return ResponseEntity.ok(books);
     }
 
     @GetMapping("/search")
-    public ResponseEntity<List<Book>> searchBooks(
-            @RequestParam("q") String query,
-            @AuthenticationPrincipal UserPrincipal user) {
-        List<Book> books = bookService.searchBooks(resolveUserId(user), query);
+    public ResponseEntity<List<Book>> searchBooks(@RequestParam("q") String query) {
+        List<Book> books = bookService.searchBooks(query);
         return ResponseEntity.ok(books);
     }
 
     @GetMapping("/{id}")
-    public ResponseEntity<Book> getBook(
-            @PathVariable Long id,
-            @AuthenticationPrincipal UserPrincipal user) {
-        return bookService.getBookById(id, resolveUserId(user))
+    public ResponseEntity<Book> getBook(@PathVariable Long id) {
+        return bookService.getBookById(id)
                 .map(ResponseEntity::ok)
                 .orElseGet(() -> ResponseEntity.notFound().build());
     }
 
     @PostMapping
-    public ResponseEntity<?> createBook(
-            @Valid @RequestBody BookRequest request,
-            @AuthenticationPrincipal UserPrincipal user) {
+    public ResponseEntity<?> createBook(@RequestBody BookRequest request) {
         try {
-            Book book = bookService.createBook(request, resolveUserId(user));
+            Book book = bookService.createBook(request, "Guest");
             return ResponseEntity.status(HttpStatus.CREATED).body(book);
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(e.getMessage());

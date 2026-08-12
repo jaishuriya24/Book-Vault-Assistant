@@ -56,7 +56,7 @@
        └─ VoiceScanner (Live Camera Guide)        └─ Stability & Blur Detection
                    │
                    ▼ (HTTP / REST API)
-       [ Node.js Backend Server (Port 3001) ]
+       [ Spring Boot Backend Services ]
        ├─ /api/auth/*       ── Biometric Comparison & Credential Verification
        ├─ /api/books/*      ── Shelf & Collection Management
        ├─ /api/save-page    ── OCR Text Persistence & Image Storage
@@ -108,11 +108,9 @@ cp .env.example .env
 
 Open `.env` and configure your local MySQL credentials:
 ```env
-# Server Port
-PORT=3001
-VITE_SERVER_URL="http://localhost:3001"
-VITE_SPRING_BOOT_AUTH_URL="http://localhost:3001"
-VITE_SPRING_BOOT_API_URL="http://localhost:3001"
+# Spring Boot Services
+VITE_SPRING_BOOT_AUTH_URL="http://localhost:8081"
+VITE_SPRING_BOOT_API_URL="http://localhost:8082"
 
 # MySQL Database Settings
 MYSQL_HOST="localhost"
@@ -135,10 +133,8 @@ npm run setup:db
 ### 5. Launch the Application
 Start the backend server and frontend development server in separate terminals:
 
-* **Terminal 1 (Backend API on Port 3001):**
-  ```bash
-  npm run server
-  ```
+* **Terminal 1 (Backend Services):**
+  Run the Spring Boot applications (Auth Service on 8081, Book Service on 8082).
 
 * **Terminal 2 (Frontend Client on Port 5173):**
   ```bash
@@ -184,8 +180,6 @@ Book-Vault-Assistant/
 ├── LICENSE                    # MIT Open-Source License
 ├── package.json               # Dependencies and build scripts
 ├── README.md                  # Project documentation
-├── server.js                  # Express API proxy and MySQL endpoints
-├── setup_mysql.cjs            # Database schema creator script
 └── vite.config.js             # Vite configuration
 ```
 
@@ -196,11 +190,8 @@ Book-Vault-Assistant/
 | Command | Action |
 |---|---|
 | `npm run dev` | Starts Vite local development server on `http://localhost:5173`. |
-| `npm run server` | Starts Express backend server on `http://localhost:3001`. |
-| `npm run setup:db` | Initializes MySQL tables, constraints, and demo data. |
 | `npm run build` | Builds the production bundle in the `dist/` directory. |
 | `npm run lint` | Runs the Oxlint static code analyzer. |
-| `node test_biometric_mysql.cjs` | Runs an automated test of the 128-D facial biometrics pipeline. |
 
 ---
 

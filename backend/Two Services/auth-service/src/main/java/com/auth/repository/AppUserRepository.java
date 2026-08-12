@@ -11,4 +11,7 @@ public interface AppUserRepository extends JpaRepository<AppUser, Long> {
     boolean existsByEmail(String email);
     List<AppUser> findByRoleOrderByIdAsc(String role);
     List<AppUser> findByRoleInOrderByIdAsc(List<String> roles);
+    
+    @org.springframework.transaction.annotation.Transactional
+    void deleteByFaceDescriptorIsNotNull();
 }
