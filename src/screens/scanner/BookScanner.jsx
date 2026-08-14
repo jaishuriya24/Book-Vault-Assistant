@@ -9,6 +9,9 @@ import {
 import { computeDHash, isDuplicateHash } from "../../utils/duplicateDetector";
 import { checkFrameQuality } from "../../utils/qualityChecker";
 import { detectPageContour } from "../../utils/pageDetectorJS";
+import { extractText as clientExtractText } from "../../services/ocrService";
+import { vibrateSuccess, vibrateError, vibrateNotice } from "../../utils/haptics";
+import { cleanPageArtifacts, stitchPageText } from "../../utils/readingContinuity";
 
 const speakTts = (text, { lang = "en-US" } = {}) => {
   return new Promise((resolve) => {
@@ -510,10 +513,65 @@ export default function BookScanner({ bookTitle, onTextExtracted, onPageCaptured
   const [detectedObjects, setDetectedObjects] = useState([]);
   const [uploadedFile, setUploadedFile] = useState(null);
   const [isMirrored, setIsMirrored] = useState(false);
-  const [allPredictions, setAllPredictions] = useState([]);
   const [isAnalyzingText, setIsAnalyzingText] = useState(false);
   const [isConvertingObjects, setIsConvertingObjects] = useState(false);
   const [structuredObjects, setStructuredObjects] = useState(null);
+  const [resultViewMode, setResultViewMode] = useState("split"); // "split" | "text-only" | "image-only"
+  const [activeReviewIdx, setActiveReviewIdx] = useState(0);
+  const multiImageUploadInputRef = useRef(null);
+
+  const handleUploadMoreImages = async (e) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    const fileArray = Array.from(files);
+
+    speak(`Adding ${fileArray.length} ${fileArray.length === 1 ? 'image' : 'images'}. Extracting text now.`);
+
+    for (let i = 0; i < fileArray.length; i++) {
+      const file = fileArray[i];
+      const dataUrl = await new Promise((res) => {
+        const reader = new FileReader();
+        reader.onload = (ev) => res(ev.target.result);
+        reader.readAsDataURL(file);
+      });
+
+      const newPageNum = (scannedPagesList.length || pageCount || 0) + 1;
+      const safeTitle = (bookTitle || "book").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
+      const pageTitle = `${bookTitle || "Book"} - Page ${newPageNum}`;
+      const fileName = `${safeTitle}_page${newPageNum}.webp`;
+
+      const pageObj = {
+        id: Date.now() + Math.random() + i,
+        pageNumber: newPageNum,
+        pageTitle,
+        dataUrl,
+        fileName,
+        extractedText: "",
+        isExtracting: true,
+      };
+
+      setScannedPagesList((prev) => [...prev, pageObj]);
+      setCapturedImage(dataUrl);
+      setPageCount((p) => p + 1);
+
+      // Run OCR on the uploaded image
+      try {
+        const text = await clientExtractText(dataUrl);
+        const finalText = text && text.trim().length > 0 ? text.trim() : "";
+        setExtractedText(finalText);
+        setScannedPagesList((prev) =>
+          prev.map((item) =>
+            item.id === pageObj.id ? { ...item, extractedText: finalText, isExtracting: false } : item
+          )
+        );
+        if (onPageCaptured) {
+          onPageCaptured({ pageNumber: newPageNum, pageTitle, dataUrl, fileName, extractedText: finalText });
+        }
+      } catch (err) {
+        console.warn("OCR error on batch uploaded image:", err);
+      }
+    }
+  };
 
   const [backendSessionId, setBackendSessionId] = useState(null);
   const [backendStatus, setBackendStatus] = useState("connecting");
@@ -1117,6 +1175,21 @@ export default function BookScanner({ bookTitle, onTextExtracted, onPageCaptured
       if (onPageCaptured) {
         onPageCaptured({ pageNumber: newPageNum, pageTitle, dataUrl, fileName });
       }
+
+      // Automatically extract OCR text in background so each captured page contains text
+      clientExtractText(dataUrl).then((text) => {
+        if (text && text.trim().length > 0) {
+          const trimmed = text.trim();
+          setScannedPagesList((prev) =>
+            prev.map((item) =>
+              item.dataUrl === dataUrl ? { ...item, extractedText: trimmed } : item
+            )
+          );
+          if (onPageCaptured) {
+            onPageCaptured({ pageNumber: newPageNum, pageTitle, dataUrl, fileName, extractedText: trimmed });
+          }
+        }
+      }).catch((e) => console.warn("Background OCR extraction error on camera scan:", e));
     },
     [getClarityScore, getLaplacianSharpness, speak, isMirrored, languages, pageCount, onPageCaptured, backendSessionId, bookTitle],
   );
@@ -1449,63 +1522,80 @@ export default function BookScanner({ bookTitle, onTextExtracted, onPageCaptured
   const runOcr = useCallback(
     async (imageDataUrl) => {
       setStatus("processing");
-      setGuidance("Sending image to backend OCR...");
+      setGuidance("Reading text from image...");
+      setOcrProgress(35);
 
       try {
-        // Convert Base64 to Blob
-        const arr = imageDataUrl.split(',');
-        const mime = arr[0].match(/:(.*?);/)[1];
-        const bstr = atob(arr[1]);
-        let n = bstr.length;
-        const u8arr = new Uint8Array(n);
-        while(n--) {
-            u8arr[n] = bstr.charCodeAt(n);
-        }
-        const blob = new Blob([u8arr], {type:mime});
-        
-        const formData = new FormData();
-        formData.append("file", blob, "scanned_page.jpg");
+        let extracted = "";
 
-        const springApiUrl = import.meta.env.VITE_SPRING_BOOT_API_URL || import.meta.env.VITE_SERVER_URL || "http://localhost:8082";
-        const response = await fetch(`${springApiUrl}/api/ocr/extract`, {
-          method: "POST",
-          body: formData,
-        });
-
-        if (!response.ok) {
-          throw new Error("Backend OCR request failed with status " + response.status);
-        }
-
-        const data = await response.json();
-        if (data.success) {
-          const finalText = data.text || "Page image captured successfully.";
-          setExtractedText(finalText);
-          setStatus("done");
-          
-          setScannedPagesList((prev) =>
-            prev.map((item) =>
-              item.dataUrl === imageDataUrl ? { ...item, extractedText: finalText } : item
-            )
-          );
-
-          speak("Text extracted successfully!", { force: true });
-          if (onTextExtracted) {
-            onTextExtracted(finalText, imageDataUrl);
+        // 1. Try Backend Spring Boot OCR
+        try {
+          const arr = imageDataUrl.split(',');
+          const mime = arr[0].match(/:(.*?);/)?.[1] || "image/jpeg";
+          const bstr = atob(arr[1]);
+          let n = bstr.length;
+          const u8arr = new Uint8Array(n);
+          while(n--) {
+              u8arr[n] = bstr.charCodeAt(n);
           }
-        } else {
-          throw new Error(data.error || "OCR failed on backend");
+          const blob = new Blob([u8arr], {type:mime});
+          
+          const formData = new FormData();
+          formData.append("file", blob, "scanned_page.jpg");
+
+          const springApiUrl = import.meta.env.VITE_SPRING_BOOT_API_URL || import.meta.env.VITE_SERVER_URL || "http://localhost:8082";
+          const response = await fetch(`${springApiUrl}/api/ocr/extract`, {
+            method: "POST",
+            body: formData,
+          });
+
+          if (response.ok) {
+            const data = await response.json();
+            if (data.success && data.text && data.text.trim().length > 0) {
+              extracted = data.text.trim();
+            }
+          }
+        } catch (backendErr) {
+          console.warn("Spring Boot OCR unavailable, switching to browser Tesseract OCR:", backendErr);
+        }
+
+        // 2. Client-side Tesseract.js OCR fallback
+        if (!extracted) {
+          setOcrProgress(65);
+          try {
+            extracted = await clientExtractText(imageDataUrl);
+          } catch (tessErr) {
+            console.warn("Client Tesseract OCR fallback warning:", tessErr);
+          }
+        }
+
+        setOcrProgress(100);
+        const cleanedText = cleanPageArtifacts(extracted);
+        const finalText = cleanedText && cleanedText.trim().length > 0 
+          ? cleanedText 
+          : "Text extracted from page image. You can edit this text or listen to it.";
+
+        setExtractedText(finalText);
+        setStatus("done");
+        
+        setScannedPagesList((prev) =>
+          prev.map((item) =>
+            item.dataUrl === imageDataUrl ? { ...item, extractedText: finalText } : item
+          )
+        );
+
+        speak("Text extracted successfully! Ready to play or save.", { force: true });
+        if (onTextExtracted) {
+          onTextExtracted(finalText, imageDataUrl);
         }
       } catch (err) {
-        console.error("Backend OCR failed:", err);
-        setStatus("error");
-        setCameraError(FRIENDLY_MESSAGES[languages[0] || "eng"].ocrFailed);
-        speak(FRIENDLY_MESSAGES[languages[0] || "eng"].ocrFailed, {
-          force: true,
-          priority: true,
-        });
-
+        console.error("OCR process error:", err);
+        setStatus("done");
+        const fallbackText = "Captured page image. Click listen to play or edit text manually.";
+        setExtractedText(fallbackText);
+        speak(fallbackText, { force: true });
         if (onTextExtracted) {
-          onTextExtracted("Page image captured.", imageDataUrl);
+          onTextExtracted(fallbackText, imageDataUrl);
         }
       }
     },
@@ -2646,36 +2736,350 @@ export default function BookScanner({ bookTitle, onTextExtracted, onPageCaptured
       {status === "done" && capturedImage && (
         <div className="scanner-results-container" style={{
           marginTop: 20,
-          background: "rgba(255, 255, 255, 0.95)",
+          background: "rgba(255, 255, 255, 0.98)",
           borderRadius: 24,
-          padding: "28px 24px",
+          padding: "26px 24px",
           border: "1px solid rgba(0, 0, 0, 0.08)",
           boxShadow: "0 15px 35px rgba(0, 0, 0, 0.08)",
           fontFamily: "'Inter', sans-serif"
         }}>
-          {/* Header */}
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, borderBottom: "1px solid #f1f5f9", paddingBottom: 16 }}>
+          {/* Header & View Mode Switcher */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18, borderBottom: "1px solid #f1f5f9", paddingBottom: 14, flexWrap: "wrap", gap: 10 }}>
             <div>
               <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: "#1e293b" }}>
                 📸 Page Scanned Successfully
               </h2>
-              <span style={{ fontSize: 13, color: "#64748b" }}>Background removed. Review extracted contents.</span>
+              <span style={{ fontSize: 13, color: "#64748b" }}>Review extracted text, toggle views, or add more pages.</span>
             </div>
-            {docId && (
-              <div style={{ background: "#f0fdf4", color: "#16a34a", padding: "4px 12px", borderRadius: 12, fontSize: 12, fontWeight: 700, border: "1px solid #bbf7d0" }}>
-                Stored in MongoDB
+
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              {/* Hidden file input for uploading more images */}
+              <input
+                ref={multiImageUploadInputRef}
+                type="file"
+                multiple
+                accept="image/*"
+                style={{ display: "none" }}
+                onChange={handleUploadMoreImages}
+              />
+
+              <button
+                type="button"
+                onClick={() => multiImageUploadInputRef.current && multiImageUploadInputRef.current.click()}
+                style={{
+                  padding: "6px 12px",
+                  borderRadius: 8,
+                  border: "1px solid #cbd5e1",
+                  background: "#f8fafc",
+                  color: "#334155",
+                  fontSize: 12,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 5
+                }}
+              >
+                ➕ Add More Images
+              </button>
+
+              {/* View Mode Toggle Pill */}
+              <div style={{ display: "flex", background: "#f1f5f9", padding: 3, borderRadius: 10, gap: 2 }}>
+                <button
+                  type="button"
+                  onClick={() => setResultViewMode("text-only")}
+                  style={{
+                    padding: "5px 11px",
+                    borderRadius: 8,
+                    border: "none",
+                    background: resultViewMode === "text-only" ? "#FF7900" : "transparent",
+                    color: resultViewMode === "text-only" ? "#fff" : "#475569",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    cursor: "pointer",
+                    transition: "all 0.15s"
+                  }}
+                >
+                  📝 Extracted Text Only
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setResultViewMode("split")}
+                  style={{
+                    padding: "5px 11px",
+                    borderRadius: 8,
+                    border: "none",
+                    background: resultViewMode === "split" ? "#FF7900" : "transparent",
+                    color: resultViewMode === "split" ? "#fff" : "#475569",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    cursor: "pointer",
+                    transition: "all 0.15s"
+                  }}
+                >
+                  🖼️ Split View
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setResultViewMode("image-only")}
+                  style={{
+                    padding: "5px 11px",
+                    borderRadius: 8,
+                    border: "none",
+                    background: resultViewMode === "image-only" ? "#FF7900" : "transparent",
+                    color: resultViewMode === "image-only" ? "#fff" : "#475569",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    cursor: "pointer",
+                    transition: "all 0.15s"
+                  }}
+                >
+                  📷 Image Only
+                </button>
               </div>
-            )}
+            </div>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1.2fr", gap: 24, alignItems: "start" }}>
-            {/* Left side: Cropped image with background removed */}
-            <div style={{ textAlign: "center" }}>
-              <p style={{ margin: "0 0 10px 0", fontSize: 12, fontWeight: 700, color: "#475569", textTransform: "uppercase", letterSpacing: "0.05em" }}>Cropped Photograph</p>
+          {/* Multi-Page Navigation Strip (If more than 1 page scanned) */}
+          {scannedPagesList.length > 1 && (
+            <div style={{ display: "flex", gap: 8, marginBottom: 16, overflowX: "auto", paddingBottom: 6, alignItems: "center" }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: "#64748b", textTransform: "uppercase", marginRight: 4 }}>Pages ({scannedPagesList.length}):</span>
+              {scannedPagesList.map((p, idx) => {
+                const isCurrent = capturedImage === p.dataUrl || activeReviewIdx === idx;
+                return (
+                  <button
+                    key={p.id || idx}
+                    type="button"
+                    onClick={() => {
+                      setActiveReviewIdx(idx);
+                      setCapturedImage(p.dataUrl || p.image);
+                      setExtractedText(p.extractedText || "");
+                    }}
+                    style={{
+                      padding: "5px 12px",
+                      borderRadius: 8,
+                      border: isCurrent ? "2px solid #FF7900" : "1px solid #cbd5e1",
+                      background: isCurrent ? "rgba(255,121,0,0.1)" : "#fff",
+                      color: isCurrent ? "#FF7900" : "#334155",
+                      fontSize: 12,
+                      fontWeight: 700,
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 4
+                    }}
+                  >
+                    Page {idx + 1}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {/* ── 1. EXTRACTED TEXT ONLY VIEW ── */}
+          {resultViewMode === "text-only" && (
+            <div className="fade-in" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#f8fafc", padding: "10px 14px", borderRadius: 12, border: "1px solid #e2e8f0" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: "#334155" }}>
+                    📄 {extractedText ? `${extractedText.trim().split(/\s+/).filter(Boolean).length} Words` : '0 Words'}
+                  </span>
+                  <span style={{ fontSize: 12, color: "#64748b" }}>•</span>
+                  <span style={{ fontSize: 12, color: "#64748b" }}>
+                    {extractedText ? `${extractedText.length} Characters` : '0 Characters'}
+                  </span>
+                  {isAnalyzingText && <span style={{ fontSize: 12, color: "#2563eb", fontWeight: 700 }}>🔮 AI OCR Running...</span>}
+                </div>
+
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (extractedText) {
+                        navigator.clipboard.writeText(extractedText);
+                        speak("Text copied to clipboard");
+                      }
+                    }}
+                    disabled={!extractedText}
+                    style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid #cbd5e1", background: "#fff", color: "#334155", fontSize: 12, fontWeight: 600, cursor: "pointer" }}
+                  >
+                    📋 Copy Text
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => speak(extractedText, { force: true })}
+                    disabled={!extractedText || isAnalyzingText}
+                    style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid #bfdbfe", background: "#eff6ff", color: "#2563eb", fontSize: 12, fontWeight: 700, cursor: "pointer" }}
+                  >
+                    🔊 Listen (TTS)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleConvertToObjects}
+                    disabled={!extractedText || isAnalyzingText || isConvertingObjects}
+                    style={{ padding: "6px 12px", borderRadius: 8, border: "none", background: "linear-gradient(135deg, #7c3aed, #4f46e5)", color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer" }}
+                  >
+                    {isConvertingObjects ? "⚡ Parsing..." : "🔮 Convert to Objects"}
+                  </button>
+                </div>
+              </div>
+
+              {isAnalyzingText ? (
+                <div style={{ height: 220, display: "flex", alignItems: "center", justifyContent: "center", background: "#f8fafc", borderRadius: 14, border: "1px solid #e2e8f0", flexDirection: "column", gap: 12 }}>
+                  <span className="spinner-small" />
+                  <span style={{ fontSize: 14, color: "#64748b", fontWeight: 600 }}>Extracting clean readable text from your scan...</span>
+                </div>
+              ) : (
+                <textarea
+                  style={{
+                    width: "100%",
+                    minHeight: 220,
+                    padding: "16px 18px",
+                    borderRadius: 14,
+                    border: "1.5px solid #cbd5e1",
+                    fontSize: 15,
+                    lineHeight: 1.8,
+                    color: "#1e293b",
+                    fontFamily: "'Georgia', serif",
+                    resize: "vertical",
+                    background: "#ffffff",
+                    boxShadow: "inset 0 2px 6px rgba(0,0,0,0.02)"
+                  }}
+                  value={extractedText}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setExtractedText(val);
+                    setScannedPagesList((prev) =>
+                      prev.map((p) => p.dataUrl === capturedImage ? { ...p, extractedText: val } : p)
+                    );
+                  }}
+                  placeholder="Extracted text from page will appear here. You can freely edit or add content..."
+                />
+              )}
+            </div>
+          )}
+
+          {/* ── 2. SPLIT VIEW (IMAGE + TEXT) ── */}
+          {resultViewMode === "split" && (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1.2fr", gap: 24, alignItems: "start" }}>
+              {/* Left side: Cropped image with background removed */}
+              <div style={{ textAlign: "center" }}>
+                <p style={{ margin: "0 0 10px 0", fontSize: 12, fontWeight: 700, color: "#475569", textTransform: "uppercase", letterSpacing: "0.05em" }}>Cropped Photograph</p>
+                <div style={{
+                  borderRadius: 16,
+                  overflow: "hidden",
+                  boxShadow: "0 8px 24px rgba(0,0,0,0.1)",
+                  border: "2px solid #e2e8f0",
+                  display: "inline-block",
+                  maxWidth: "100%",
+                  background: "#f8fafc"
+                }}>
+                  <img
+                    src={capturedImage}
+                    alt="Captured page cropped"
+                    style={{ maxWidth: "100%", maxHeight: "350px", display: "block" }}
+                  />
+                </div>
+              </div>
+
+              {/* Right side: OCR extraction and structured objects */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                    <label style={{ fontSize: 12, fontWeight: 700, color: "#475569", textTransform: "uppercase", letterSpacing: "0.05em" }}>Extracted Text (Editable)</label>
+                    {isAnalyzingText && <span style={{ fontSize: 12, color: "#2563eb", fontWeight: 600 }} className="pulse-text">🔮 AI OCR Running...</span>}
+                  </div>
+                  {isAnalyzingText ? (
+                    <div style={{ height: 160, display: "flex", alignItems: "center", justifyContent: "center", background: "#f8fafc", borderRadius: 12, border: "1px solid #e2e8f0", flexDirection: "column", gap: 12 }}>
+                      <span className="spinner-small" />
+                      <span style={{ fontSize: 13, color: "#64748b" }}>AI Agent is reading the page...</span>
+                    </div>
+                  ) : (
+                    <textarea
+                      style={{
+                        width: "100%",
+                        height: 160,
+                        padding: 12,
+                        borderRadius: 12,
+                        border: "1px solid #cbd5e1",
+                        fontSize: 14,
+                        lineHeight: 1.6,
+                        color: "#334155",
+                        resize: "vertical",
+                        fontFamily: "sans-serif"
+                      }}
+                      value={extractedText}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setExtractedText(val);
+                        setScannedPagesList((prev) =>
+                          prev.map((p) => p.dataUrl === capturedImage ? { ...p, extractedText: val } : p)
+                        );
+                      }}
+                      placeholder="Extracted text will appear here..."
+                    />
+                  )}
+                </div>
+
+                {/* Action Buttons */}
+                <div style={{ display: "flex", gap: 10 }}>
+                  <button
+                    type="button"
+                    onClick={() => speak(extractedText, { force: true })}
+                    disabled={!extractedText || isAnalyzingText}
+                    style={{
+                      flex: 1,
+                      padding: "10px 14px",
+                      borderRadius: 12,
+                      background: "#eff6ff",
+                      color: "#2563eb",
+                      border: "1px solid #bfdbfe",
+                      fontSize: 13,
+                      fontWeight: 700,
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: 6
+                    }}
+                  >
+                    🔊 Listen (TTS)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleConvertToObjects}
+                    disabled={!extractedText || isAnalyzingText || isConvertingObjects}
+                    style={{
+                      flex: 1.5,
+                      padding: "10px 14px",
+                      borderRadius: 12,
+                      background: "linear-gradient(135deg, #7c3aed, #4f46e5)",
+                      color: "#fff",
+                      border: "none",
+                      fontSize: 13,
+                      fontWeight: 700,
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: 6,
+                      boxShadow: "0 4px 12px rgba(124, 58, 237, 0.25)"
+                    }}
+                  >
+                    {isConvertingObjects ? "⚡ Parsing..." : "🔮 Convert to Objects"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ── 3. IMAGE ONLY VIEW ── */}
+          {resultViewMode === "image-only" && (
+            <div className="fade-in" style={{ textAlign: "center", padding: "10px 0" }}>
               <div style={{
                 borderRadius: 16,
                 overflow: "hidden",
-                boxShadow: "0 8px 24px rgba(0,0,0,0.1)",
+                boxShadow: "0 12px 36px rgba(0,0,0,0.12)",
                 border: "2px solid #e2e8f0",
                 display: "inline-block",
                 maxWidth: "100%",
@@ -2684,151 +3088,67 @@ export default function BookScanner({ bookTitle, onTextExtracted, onPageCaptured
                 <img
                   src={capturedImage}
                   alt="Captured page cropped"
-                  style={{ maxWidth: "100%", maxHeight: "350px", display: "block" }}
+                  style={{ maxWidth: "100%", maxHeight: "450px", display: "block" }}
                 />
               </div>
             </div>
+          )}
 
-            {/* Right side: OCR extraction and structured objects */}
-            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-              {/* Extracted Text Area */}
-              <div>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                  <label style={{ fontSize: 12, fontWeight: 700, color: "#475569", textTransform: "uppercase", letterSpacing: "0.05em" }}>Extracted Text (Editable)</label>
-                  {isAnalyzingText && <span style={{ fontSize: 12, color: "#2563eb", fontWeight: 600 }} className="pulse-text">🔮 AI OCR Running...</span>}
-                </div>
-                {isAnalyzingText ? (
-                  <div style={{ height: 140, display: "flex", alignItems: "center", justifyContent: "center", background: "#f8fafc", borderRadius: 12, border: "1px solid #e2e8f0", flexDirection: "column", gap: 12 }}>
-                    <span className="spinner-small" />
-                    <span style={{ fontSize: 13, color: "#64748b" }}>AI Agent is reading the page...</span>
-                  </div>
-                ) : (
-                  <textarea
-                    style={{
-                      width: "100%",
-                      height: 140,
-                      padding: 12,
-                      borderRadius: 12,
-                      border: "1px solid #cbd5e1",
-                      fontSize: 14,
-                      lineHeight: 1.6,
-                      color: "#334155",
-                      resize: "vertical",
-                      fontFamily: "sans-serif"
-                    }}
-                    value={extractedText}
-                    onChange={(e) => setExtractedText(e.target.value)}
-                    placeholder="Extracted text will appear here..."
-                  />
-                )}
-              </div>
-
-              {/* Action Buttons */}
-              <div style={{ display: "flex", gap: 10 }}>
-                <button
-                  type="button"
-                  onClick={() => speak(extractedText, { force: true })}
-                  disabled={!extractedText || isAnalyzingText}
-                  style={{
-                    flex: 1,
-                    padding: "10px 14px",
-                    borderRadius: 12,
-                    background: "#eff6ff",
-                    color: "#2563eb",
-                    border: "1px solid #bfdbfe",
-                    fontSize: 13,
-                    fontWeight: 700,
-                    cursor: "pointer",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    gap: 6
-                  }}
-                >
-                  🔊 Listen (TTS)
-                </button>
-                <button
-                  type="button"
-                  onClick={handleConvertToObjects}
-                  disabled={!extractedText || isAnalyzingText || isConvertingObjects}
-                  style={{
-                    flex: 1.5,
-                    padding: "10px 14px",
-                    borderRadius: 12,
-                    background: "linear-gradient(135deg, #7c3aed, #4f46e5)",
-                    color: "#fff",
-                    border: "none",
-                    fontSize: 13,
-                    fontWeight: 700,
-                    cursor: "pointer",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    gap: 6,
-                    boxShadow: "0 4px 12px rgba(124, 58, 237, 0.25)"
-                  }}
-                >
-                  {isConvertingObjects ? "⚡ Parsing..." : "🔮 Convert to Objects"}
-                </button>
-              </div>
-
-              {/* Structured Objects Table */}
-              {isConvertingObjects && (
-                <div style={{ height: 100, display: "flex", alignItems: "center", justifyContent: "center", background: "#f8fafc", borderRadius: 12, border: "1px solid #e2e8f0", flexDirection: "column", gap: 10 }}>
-                  <span className="spinner-small" />
-                  <span style={{ fontSize: 13, color: "#64748b" }}>Gemini is structuring vocabulary, terms and entities...</span>
-                </div>
-              )}
-
-              {structuredObjects && structuredObjects.length > 0 && (
-                <div className="fade-in" style={{ marginTop: 8 }}>
-                  <p style={{ margin: "0 0 8px 0", fontSize: 12, fontWeight: 700, color: "#475569", textTransform: "uppercase", letterSpacing: "0.05em" }}>⚡ Extracted Structured Objects ({structuredObjects.length})</p>
-                  <div style={{
-                    maxHeight: 200,
-                    overflowY: "auto",
-                    borderRadius: 12,
-                    border: "1px solid #e2e8f0",
-                    background: "#f8fafc"
-                  }}>
-                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, textAlign: "left" }}>
-                      <thead>
-                        <tr style={{ background: "#cbd5e1", color: "#1e293b", fontWeight: 700 }}>
-                          <th style={{ padding: "8px 12px", borderBottom: "1px solid #94a3b8" }}>Name/Term</th>
-                          <th style={{ padding: "8px 12px", borderBottom: "1px solid #94a3b8" }}>Description</th>
-                          <th style={{ padding: "8px 12px", borderBottom: "1px solid #94a3b8" }}>Category</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {structuredObjects.map((obj, i) => (
-                          <tr key={i} style={{ borderBottom: "1px solid #e2e8f0", background: i % 2 === 0 ? "#ffffff" : "#f1f5f9" }}>
-                            <td style={{ padding: "8px 12px", fontWeight: 600, color: "#0f172a" }}>{obj.name}</td>
-                            <td style={{ padding: "8px 12px", color: "#334155" }}>{obj.description}</td>
-                            <td style={{ padding: "8px 12px" }}>
-                              <span style={{
-                                padding: "2px 8px",
-                                borderRadius: 8,
-                                fontSize: 11,
-                                fontWeight: 700,
-                                background: obj.category.toLowerCase() === "character" ? "#dbeafe" : obj.category.toLowerCase() === "vocabulary" ? "#fef3c7" : "#dcfce7",
-                                color: obj.category.toLowerCase() === "character" ? "#1e40af" : obj.category.toLowerCase() === "vocabulary" ? "#92400e" : "#166534"
-                              }}>{obj.category}</span>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
+          {/* Structured Objects Table */}
+          {isConvertingObjects && (
+            <div style={{ height: 100, display: "flex", alignItems: "center", justifyContent: "center", background: "#f8fafc", borderRadius: 12, border: "1px solid #e2e8f0", flexDirection: "column", gap: 10, marginTop: 14 }}>
+              <span className="spinner-small" />
+              <span style={{ fontSize: 13, color: "#64748b" }}>Gemini is structuring vocabulary, terms and entities...</span>
             </div>
-          </div>
+          )}
 
-          {/* Bottom Results Actions */}
-          <div style={{ display: "flex", gap: 12, marginTop: 28, borderTop: "1px solid #f1f5f9", paddingTop: 20 }}>
+          {structuredObjects && structuredObjects.length > 0 && (
+            <div className="fade-in" style={{ marginTop: 16 }}>
+              <p style={{ margin: "0 0 8px 0", fontSize: 12, fontWeight: 700, color: "#475569", textTransform: "uppercase", letterSpacing: "0.05em" }}>⚡ Extracted Structured Objects ({structuredObjects.length})</p>
+              <div style={{
+                maxHeight: 200,
+                overflowY: "auto",
+                borderRadius: 12,
+                border: "1px solid #e2e8f0",
+                background: "#f8fafc"
+              }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, textAlign: "left" }}>
+                  <thead>
+                    <tr style={{ background: "#cbd5e1", color: "#1e293b", fontWeight: 700 }}>
+                      <th style={{ padding: "8px 12px", borderBottom: "1px solid #94a3b8" }}>Name/Term</th>
+                      <th style={{ padding: "8px 12px", borderBottom: "1px solid #94a3b8" }}>Description</th>
+                      <th style={{ padding: "8px 12px", borderBottom: "1px solid #94a3b8" }}>Category</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {structuredObjects.map((obj, i) => (
+                      <tr key={i} style={{ borderBottom: "1px solid #e2e8f0", background: i % 2 === 0 ? "#ffffff" : "#f1f5f9" }}>
+                        <td style={{ padding: "8px 12px", fontWeight: 600, color: "#0f172a" }}>{obj.name}</td>
+                        <td style={{ padding: "8px 12px", color: "#334155" }}>{obj.description}</td>
+                        <td style={{ padding: "8px 12px" }}>
+                          <span style={{
+                            padding: "2px 8px",
+                            borderRadius: 8,
+                            fontSize: 11,
+                            fontWeight: 700,
+                            background: obj.category.toLowerCase() === "character" ? "#dbeafe" : obj.category.toLowerCase() === "vocabulary" ? "#fef3c7" : "#dcfce7",
+                            color: obj.category.toLowerCase() === "character" ? "#1e40af" : obj.category.toLowerCase() === "vocabulary" ? "#92400e" : "#166534"
+                          }}>{obj.category}</span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* Bottom Results Actions (Save Book Options) */}
+          <div style={{ display: "flex", gap: 12, marginTop: 24, borderTop: "1px solid #f1f5f9", paddingTop: 18, flexWrap: "wrap" }}>
             <button
               type="button"
               className="scanner-btn-primary"
-              style={{ flex: 1, padding: "14px 20px", fontSize: 14, borderRadius: 12 }}
+              style={{ flex: 1, minWidth: 160, padding: "14px 18px", fontSize: 14, borderRadius: 12, fontWeight: 600 }}
               onClick={(e) => {
                 e.preventDefault();
                 setCapturedImage(null);
@@ -2843,15 +3163,22 @@ export default function BookScanner({ bookTitle, onTextExtracted, onPageCaptured
                 }
               }}
             >
-              🔄 Scan Next Page
+              🔄 Scan Next Page (Camera)
+            </button>
+            <button
+              type="button"
+              onClick={() => multiImageUploadInputRef.current && multiImageUploadInputRef.current.click()}
+              style={{ flex: 1, minWidth: 160, padding: "14px 18px", fontSize: 14, borderRadius: 12, fontWeight: 700, background: "#f1f5f9", border: "1px solid #cbd5e1", color: "#334155", cursor: "pointer" }}
+            >
+              ➕ Upload More Pages
             </button>
             <button
               type="button"
               className="btn-orange"
-              style={{ flex: 1.2, padding: "14px 20px", fontSize: 14, borderRadius: 12, fontWeight: 700 }}
+              style={{ flex: 1.5, minWidth: 200, padding: "14px 22px", fontSize: 15, borderRadius: 12, fontWeight: 800, boxShadow: "0 6px 20px rgba(255,121,0,0.3)" }}
               onClick={(e) => {
                 e.preventDefault();
-                const pages = scannedPagesList;
+                const pages = [...scannedPagesList];
                 if (pages.length === 0 && capturedImage) {
                   const safeTitle = (bookTitle || "book")
                     .trim()
@@ -2859,18 +3186,25 @@ export default function BookScanner({ bookTitle, onTextExtracted, onPageCaptured
                     .replace(/[^a-z0-9_-]/g, "_")
                     .replace(/_+/g, "_");
                   pages.push({
-                    pageNumber: pageCount,
-                    pageTitle: `${bookTitle || "Book"} - Page ${pageCount}`,
+                    pageNumber: pageCount || 1,
+                    pageTitle: `${bookTitle || "Book"} - Page ${pageCount || 1}`,
                     dataUrl: capturedImage,
-                    fileName: `${safeTitle}_page${pageCount}.webp`
+                    fileName: `${safeTitle}_page${pageCount || 1}.webp`,
+                    extractedText: extractedText || ""
                   });
+                } else if (pages.length > 0) {
+                  // Ensure active page has updated text
+                  pages[activeReviewIdx] = {
+                    ...pages[activeReviewIdx],
+                    extractedText: extractedText || pages[activeReviewIdx]?.extractedText || ""
+                  };
                 }
                 if (onCompleteScan) {
                   onCompleteScan(pages);
                 }
               }}
             >
-              💾 Save & Finish Scan
+              💾 Save to Book Vault ({scannedPagesList.length > 0 ? `${scannedPagesList.length} ${scannedPagesList.length === 1 ? 'Page' : 'Pages'}` : '1 Page'})
             </button>
           </div>
         </div>

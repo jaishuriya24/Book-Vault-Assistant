@@ -1,125 +1,54 @@
-import { useState, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
+import { BookOpen, User, Shield, CheckCircle2, Layers, BookMarked, ArrowLeft, LogOut, Plus, RefreshCw, Key } from "lucide-react";
+import mysqlService from "../../services/mysqlService";
 import notify from "../../services/notificationService";
-
-const AUTH_URL = import.meta.env.VITE_SPRING_BOOT_AUTH_URL || import.meta.env.VITE_SERVER_URL || "http://localhost:8081";
-
-function deduplicateUserList(list) {
-  if (!Array.isArray(list)) return [];
-  const map = new Map();
-  for (const u of list) {
-    const rawName = (u.userName || u.name || '').trim();
-    if (!rawName) continue;
-    const key = rawName.toLowerCase();
-    if (!map.has(key) || u.hasBiometric) {
-      map.set(key, { ...u, userName: rawName });
-    }
-  }
-  return Array.from(map.values());
-}
 
 export default function ProfileScreen() {
   const navigate = useNavigate();
   const [username, setUsername] = useState(() => localStorage.getItem("username") || "Guest");
-  const [registeredUsers, setRegisteredUsers] = useState(() => {
+  const [userBooks, setUserBooks] = useState([]);
+  const [isLoadingBooks, setIsLoadingBooks] = useState(true);
+  const [userProfile, setUserProfile] = useState(null);
+
+  const loadUserData = async () => {
+    setIsLoadingBooks(true);
+    const active = localStorage.getItem("username") || "Guest";
+    setUsername(active);
+
+    // 1. Fetch only books uploaded by this user from MySQL
+    try {
+      const books = await mysqlService.getAllBooks(active);
+      setUserBooks(books || []);
+    } catch (err) {
+      console.warn("Could not fetch user books from MySQL:", err.message);
+    } finally {
+      setIsLoadingBooks(false);
+    }
+
+    // 2. Fetch biometric / profile info for this user only
     try {
       const localProfiles = JSON.parse(localStorage.getItem("face_profiles") || "[]");
-      const mapped = localProfiles.map((p, idx) => ({
-        userId: idx + 1,
-        userName: p.name,
-        email: p.email || `${p.name.toLowerCase().replace(/\s+/g, '')}@bookvault.local`,
-        role: 'READER',
-        sourceTable: 'biometric_users',
-        authType: 'BIOMETRIC_FACE',
-        hasBiometric: true,
-        faceDescriptor: p.faceDescriptor,
-        createdAt: p.createdAt || new Date().toISOString()
-      }));
-      return deduplicateUserList(mapped);
-    } catch (_) {
-      return [];
-    }
-  });
-  const [loading, setLoading] = useState(false);
-
-  const fetchUsers = () => {
-    fetch(`${AUTH_URL}/api/users/readers`)
-      .then((res) => res.json())
-      .then((data) => {
-        if (Array.isArray(data)) {
-          const deduped = deduplicateUserList(data);
-          setRegisteredUsers(deduped);
-          // Sync local storage face profiles with deduplicated server list
-          const freshLocal = deduped
-            .filter((u) => u.faceDescriptor)
-            .map((u) => ({
-              name: u.userName,
-              email: u.email,
-              faceDescriptor: typeof u.faceDescriptor === "string" ? JSON.parse(u.faceDescriptor) : u.faceDescriptor,
-              createdAt: u.createdAt,
-            }));
-          localStorage.setItem("face_profiles", JSON.stringify(freshLocal));
-        }
-      })
-      .catch((err) => console.warn("Could not fetch MySQL users:", err.message))
-      .finally(() => setLoading(false));
-  };
-
-  const handleDeleteUser = async (e, u) => {
-    e.stopPropagation();
-    const uName = u.userName || u.name;
-    const shouldDelete = await notify.confirm({
-      title: "Remove User Profile",
-      message: `Delete "${uName}" from registered biometric users?`,
-      confirmText: "Delete",
-      cancelText: "Cancel",
-      type: "danger",
-      icon: "🗑️",
-    });
-
-    if (shouldDelete) {
-      try {
-        if (u.sourceTable === 'biometric_users' && u.userId) {
-          await fetch(`${AUTH_URL}/api/users/biometric/${u.userId}`, { method: 'DELETE' });
-        }
-      } catch (_) {}
-
-      // Prune local storage
-      const local = JSON.parse(localStorage.getItem("face_profiles") || "[]");
-      const updated = local.filter((p) => p.name.toLowerCase() !== uName.toLowerCase());
-      localStorage.setItem("face_profiles", JSON.stringify(updated));
-
-      fetchUsers();
-      notify.success(`Removed user "${uName}".`);
-    }
-  };
-
-  const handleClearAllUsers = async () => {
-    const shouldClear = await notify.confirm({
-      title: "Clear All Registered Users",
-      message: "This will remove all enrolled face profiles so you can start fresh with only real users.",
-      confirmText: "Clear All",
-      cancelText: "Cancel",
-      type: "danger",
-      icon: "🧹",
-    });
-
-    if (shouldClear) {
-      localStorage.setItem("face_profiles", "[]");
-      localStorage.removeItem("username");
-      localStorage.removeItem("token");
-      try {
-        await fetch(`${AUTH_URL}/api/users/clear-all`, { method: 'DELETE' });
-      } catch (_) {}
-      fetchUsers();
-      notify.info("All test user profiles cleared.");
-    }
+      const matched = localProfiles.find(p => (p.name || "").toLowerCase() === active.toLowerCase());
+      if (matched) {
+        setUserProfile({
+          name: matched.name,
+          email: matched.email || `${matched.name.toLowerCase().replace(/\s+/g, '')}@bookvault.local`,
+          hasBiometric: true,
+          createdAt: matched.createdAt
+        });
+      } else {
+        setUserProfile({
+          name: active,
+          email: `${active.toLowerCase().replace(/\s+/g, '')}@bookvault.local`,
+          hasBiometric: false
+        });
+      }
+    } catch (_) {}
   };
 
   useEffect(() => {
-    fetchUsers();
-    window.addEventListener("focus", fetchUsers);
-    return () => window.removeEventListener("focus", fetchUsers);
+    loadUserData();
   }, []);
 
   const handleLogout = async () => {
@@ -142,71 +71,66 @@ export default function ProfileScreen() {
     }
   };
 
-  const handleSwitchUser = (user) => {
-    const newName = user.userName || user.name;
-    localStorage.setItem("username", newName);
-    setUsername(newName);
-    window.dispatchEvent(new Event("bookvault:username-updated"));
-    notify.success(`Switched active user to "${newName}"!`);
-  };
-
-  const currentUserData = registeredUsers.find(
-    (u) => (u.userName || "").toLowerCase() === username.toLowerCase()
-  );
+  const totalPages = userBooks.reduce((acc, b) => acc + (b.pageCount || (b.pages ? b.pages.length : 1)), 0);
+  const inProgressCount = userBooks.filter(b => localStorage.getItem(`readingPos_${username}_${b.id}`)).length;
 
   return (
-    <div className="slide-up" style={{ width: "100%", maxWidth: 860, margin: "0 auto", padding: "16px 20px" }}>
-      {/* ── Top Nav ── */}
+    <div className="slide-up" style={{ width: "100%", maxWidth: 880, margin: "0 auto", padding: "20px 20px 60px", fontFamily: "'Inter', sans-serif" }}>
+      {/* ── Top Navigation ── */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
         <button
+          type="button"
           onClick={() => navigate("/")}
           style={{
             display: "inline-flex",
             alignItems: "center",
             gap: 8,
-            padding: "8px 16px",
+            padding: "9px 18px",
             borderRadius: 12,
-            background: "rgba(255,255,255,0.06)",
-            border: "1px solid rgba(255,255,255,0.12)",
-            color: "#e2e8f0",
+            background: "rgba(255,255,255,0.85)",
+            border: "1px solid var(--border)",
+            color: "var(--text-secondary)",
             cursor: "pointer",
             fontWeight: 600,
             fontSize: 14,
+            boxShadow: "0 2px 8px rgba(0,0,0,0.04)"
           }}
         >
-          ← Back to Vault
+          <ArrowLeft size={16} /> Back to Vault
         </button>
 
         <div style={{ display: "flex", gap: 10 }}>
           <button
-            onClick={() => navigate("/admin-dashboard")}
+            type="button"
+            onClick={loadUserData}
             style={{
-              padding: "8px 18px",
-              borderRadius: 12,
-              background: "linear-gradient(135deg, #4f46e5, #4338ca)",
-              border: "1px solid rgba(129,140,248,0.3)",
-              color: "#fff",
-              cursor: "pointer",
-              fontWeight: 600,
-              fontSize: 14,
-              display: "flex",
+              display: "inline-flex",
               alignItems: "center",
               gap: 6,
+              padding: "9px 14px",
+              borderRadius: 12,
+              background: "#fff",
+              border: "1px solid var(--border)",
+              color: "var(--text-secondary)",
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: "pointer",
+              boxShadow: "0 2px 6px rgba(0,0,0,0.04)"
             }}
           >
-            👥 View MySQL Database
+            <RefreshCw size={14} className={isLoadingBooks ? "animate-spin" : ""} /> Refresh
           </button>
         </div>
       </div>
 
-      {/* ── Active User Hero Profile Card ── */}
+      {/* ── Active User Profile Hero Card ── */}
       <div
         style={{
-          background: "linear-gradient(135deg, rgba(20,20,20,0.9) 0%, rgba(30,30,30,0.85) 100%)",
-          border: "1px solid rgba(255,255,255,0.1)",
+          background: "linear-gradient(135deg, #18181b 0%, #27272a 100%)",
+          border: "1px solid rgba(255,255,255,0.12)",
           borderRadius: 24,
           padding: "36px 32px",
-          boxShadow: "0 20px 40px rgba(0,0,0,0.4)",
+          boxShadow: "0 16px 40px rgba(0,0,0,0.18)",
           position: "relative",
           overflow: "hidden",
           marginBottom: 28,
@@ -217,22 +141,22 @@ export default function ProfileScreen() {
             position: "absolute",
             top: -40,
             right: -40,
-            width: 160,
-            height: 160,
-            background: "radial-gradient(circle, rgba(234,88,12,0.25) 0%, transparent 70%)",
+            width: 180,
+            height: 180,
+            background: "radial-gradient(circle, rgba(234,88,12,0.3) 0%, transparent 70%)",
             borderRadius: "50%",
             pointerEvents: "none",
           }}
         />
 
         <div style={{ display: "flex", alignItems: "center", gap: 24, flexWrap: "wrap" }}>
-          {/* Avatar */}
+          {/* User Avatar */}
           <div
             style={{
               width: 84,
               height: 84,
               borderRadius: "50%",
-              background: "linear-gradient(135deg, #ea580c, #9a3412)",
+              background: "linear-gradient(135deg, #ea580c, #c2410c)",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
@@ -260,7 +184,7 @@ export default function ProfileScreen() {
             />
           </div>
 
-          {/* User Meta */}
+          {/* User Details */}
           <div style={{ flex: 1, minWidth: 200 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
               <h1 style={{ margin: 0, fontSize: 26, fontWeight: 800, color: "#fff", letterSpacing: "-0.02em" }}>
@@ -272,21 +196,21 @@ export default function ProfileScreen() {
                   borderRadius: 99,
                   fontSize: 11,
                   fontWeight: 700,
-                  background: currentUserData?.role === "ADMIN" ? "rgba(168,85,247,0.2)" : "rgba(234,88,12,0.2)",
-                  color: currentUserData?.role === "ADMIN" ? "#c084fc" : "#fb923c",
-                  border: `1px solid ${currentUserData?.role === "ADMIN" ? "rgba(168,85,247,0.4)" : "rgba(234,88,12,0.4)"}`,
+                  background: "rgba(234,88,12,0.25)",
+                  color: "#fb923c",
+                  border: "1px solid rgba(234,88,12,0.4)",
                   textTransform: "uppercase",
                 }}
               >
-                {currentUserData?.role || (username.toLowerCase().includes("admin") ? "ADMIN" : "READER")}
+                Reader Profile
               </span>
             </div>
 
-            <p style={{ margin: "0 0 10px", fontSize: 14, color: "rgba(255,255,255,0.6)" }}>
-              {currentUserData?.email || `${username.toLowerCase().replace(/\s+/g, "")}@bookvault.local`}
+            <p style={{ margin: "0 0 12px", fontSize: 14, color: "rgba(255,255,255,0.65)" }}>
+              {userProfile?.email || `${username.toLowerCase().replace(/\s+/g, "")}@bookvault.local`}
             </p>
 
-            <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
               <span
                 style={{
                   display: "inline-flex",
@@ -295,32 +219,29 @@ export default function ProfileScreen() {
                   fontSize: 12,
                   fontWeight: 600,
                   color: "#4ade80",
-                  background: "rgba(34,197,94,0.12)",
+                  background: "rgba(34,197,94,0.15)",
                   padding: "4px 10px",
                   borderRadius: 8,
                 }}
               >
-                <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#4ade80" }} />
-                MySQL Connected
+                <CheckCircle2 size={13} /> MySQL Connected (Port 3306)
               </span>
 
-              {currentUserData?.hasBiometric && (
-                <span
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 5,
-                    fontSize: 12,
-                    fontWeight: 600,
-                    color: "#38bdf8",
-                    background: "rgba(56,189,248,0.12)",
-                    padding: "4px 10px",
-                    borderRadius: 8,
-                  }}
-                >
-                  👁️ Face Biometrics Enrolled
-                </span>
-              )}
+              <span
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 5,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: userProfile?.hasBiometric ? "#38bdf8" : "#94a3b8",
+                  background: userProfile?.hasBiometric ? "rgba(56,189,248,0.15)" : "rgba(255,255,255,0.08)",
+                  padding: "4px 10px",
+                  borderRadius: 8,
+                }}
+              >
+                {userProfile?.hasBiometric ? "👁️ Face Biometrics Enrolled" : "🔑 Password Account"}
+              </span>
             </div>
           </div>
 
@@ -328,6 +249,7 @@ export default function ProfileScreen() {
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {username !== "Guest" ? (
               <button
+                type="button"
                 onClick={handleLogout}
                 style={{
                   padding: "10px 22px",
@@ -335,7 +257,7 @@ export default function ProfileScreen() {
                   background: "rgba(239,68,68,0.15)",
                   border: "1px solid rgba(239,68,68,0.4)",
                   color: "#f87171",
-                  fontWeight: 600,
+                  fontWeight: 700,
                   fontSize: 14,
                   cursor: "pointer",
                   display: "flex",
@@ -344,10 +266,11 @@ export default function ProfileScreen() {
                   gap: 8,
                 }}
               >
-                🚪 Log Out
+                <LogOut size={16} /> Log Out
               </button>
             ) : (
               <button
+                type="button"
                 onClick={() => navigate("/signin")}
                 style={{
                   padding: "10px 22px",
@@ -367,152 +290,145 @@ export default function ProfileScreen() {
         </div>
       </div>
 
-      {/* ── All Registered Users in MySQL ── */}
-      <div
-        style={{
-          background: "rgba(18,18,18,0.75)",
-          border: "1px solid rgba(255,255,255,0.08)",
-          borderRadius: 20,
-          padding: "24px 28px",
-        }}
-      >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18, flexWrap: "wrap", gap: 10 }}>
-          <div>
-            <h3 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: "#fff" }}>
-              👥 All Registered Users ({registeredUsers.length})
-            </h3>
-            <p style={{ margin: "4px 0 0", fontSize: 13, color: "rgba(255,255,255,0.45)" }}>
-              Only unique, verified face profiles stored in MySQL <code style={{ color: "#fb923c" }}>biometric_users</code>.
-            </p>
+      {/* ── User Reading Statistics Cards ── */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 16, marginBottom: 28 }}>
+        <div style={{ background: "#fff", border: "1px solid var(--border)", borderRadius: 16, padding: 20, boxShadow: "0 4px 16px rgba(0,0,0,0.04)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <span style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--text-muted)" }}>My Uploaded Books</span>
+            <BookOpen size={18} color="#FF7900" />
           </div>
-
-          <div style={{ display: "flex", gap: 8 }}>
-            {registeredUsers.length > 0 && (
-              <button
-                onClick={handleClearAllUsers}
-                style={{
-                  padding: "6px 12px",
-                  borderRadius: 10,
-                  background: "rgba(239,68,68,0.12)",
-                  border: "1px solid rgba(239,68,68,0.3)",
-                  color: "#f87171",
-                  fontSize: 12,
-                  fontWeight: 600,
-                  cursor: "pointer",
-                }}
-              >
-                🧹 Clear Old Test Users
-              </button>
-            )}
-
-            <button
-              onClick={() => {
-                localStorage.removeItem("username");
-                localStorage.removeItem("token");
-                localStorage.removeItem("readease_token");
-                window.dispatchEvent(new Event("bookvault:username-updated"));
-                navigate("/facelogin?mode=register");
-              }}
-              style={{
-                padding: "6px 14px",
-                borderRadius: 10,
-                background: "linear-gradient(135deg, rgba(234,88,12,0.2), rgba(249,115,22,0.3))",
-                border: "1px solid rgba(251,146,60,0.4)",
-                color: "#fb923c",
-                fontSize: 13,
-                fontWeight: 600,
-                cursor: "pointer",
-              }}
-            >
-              + Add New Face / User
-            </button>
+          <div style={{ fontSize: 28, fontWeight: 800, color: "#FF7900" }}>
+            {userBooks.length}
+          </div>
+          <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4 }}>
+            Books saved in your MySQL vault
           </div>
         </div>
 
-        {loading ? (
-          <p style={{ color: "rgba(255,255,255,0.4)", fontSize: 14 }}>Loading registered users from MySQL...</p>
-        ) : registeredUsers.length === 0 ? (
-          <p style={{ color: "rgba(255,255,255,0.4)", fontSize: 14 }}>No registered users found in MySQL.</p>
+        <div style={{ background: "#fff", border: "1px solid var(--border)", borderRadius: 16, padding: 20, boxShadow: "0 4px 16px rgba(0,0,0,0.04)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <span style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--text-muted)" }}>Total Pages Extracted</span>
+            <Layers size={18} color="#0284c7" />
+          </div>
+          <div style={{ fontSize: 28, fontWeight: 800, color: "#0284c7" }}>
+            {totalPages}
+          </div>
+          <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4 }}>
+            Pages scanned & OCR converted
+          </div>
+        </div>
+
+        <div style={{ background: "#fff", border: "1px solid var(--border)", borderRadius: 16, padding: 20, boxShadow: "0 4px 16px rgba(0,0,0,0.04)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <span style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--text-muted)" }}>In Progress</span>
+            <BookMarked size={18} color="#10b981" />
+          </div>
+          <div style={{ fontSize: 28, fontWeight: 800, color: "#10b981" }}>
+            {inProgressCount}
+          </div>
+          <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4 }}>
+            Books with saved reading bookmarks
+          </div>
+        </div>
+      </div>
+
+      {/* ── My Uploaded Books Shelf (Only User Uploaded Books) ── */}
+      <div style={{ background: "#fff", borderRadius: 20, border: "1px solid var(--border)", padding: "24px 28px", boxShadow: "0 6px 24px rgba(0,0,0,0.04)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 10 }}>
+          <div>
+            <h2 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: "var(--text-primary)" }}>
+              📚 My Uploaded Books ({userBooks.length})
+            </h2>
+            <p style={{ margin: "4px 0 0", fontSize: 13, color: "var(--text-muted)" }}>
+              Books stored in MySQL database specifically under account <strong>{username}</strong>.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => navigate("/")}
+            style={{
+              padding: "8px 16px",
+              borderRadius: 10,
+              background: "linear-gradient(135deg, #FF7900, #ea580c)",
+              border: "none",
+              color: "#fff",
+              fontSize: 13,
+              fontWeight: 700,
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 6
+            }}
+          >
+            <Plus size={15} /> Add / Scan New Book
+          </button>
+        </div>
+
+        {isLoadingBooks ? (
+          <div style={{ textAlign: "center", padding: "40px 20px", color: "var(--text-muted)" }}>
+            Loading your uploaded books from MySQL...
+          </div>
+        ) : userBooks.length === 0 ? (
+          <div style={{ textAlign: "center", padding: "40px 20px", background: "#f8fafc", borderRadius: 14, border: "1px dashed #cbd5e1" }}>
+            <div style={{ fontSize: 32, marginBottom: 8 }}>📖</div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: "#334155" }}>No uploaded books yet</div>
+            <div style={{ fontSize: 13, color: "#64748b", marginTop: 4, marginBottom: 16 }}>
+              You haven't uploaded or scanned any books under account <strong>{username}</strong> yet.
+            </div>
+            <button
+              type="button"
+              onClick={() => navigate("/")}
+              style={{
+                padding: "8px 18px",
+                borderRadius: 10,
+                background: "#FF7900",
+                color: "#fff",
+                border: "none",
+                fontSize: 13,
+                fontWeight: 700,
+                cursor: "pointer"
+              }}
+            >
+              Scan or Upload a Book
+            </button>
+          </div>
         ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 12 }}>
-            {registeredUsers.map((u) => {
-              const uName = u.userName || u.name;
-              const isActive = (uName || "").toLowerCase() === username.toLowerCase();
-              return (
-                <div
-                  key={u.userId || u.id}
-                  onClick={() => handleSwitchUser(u)}
-                  style={{
-                    padding: "14px 16px",
-                    borderRadius: 14,
-                    background: isActive ? "rgba(234,88,12,0.15)" : "rgba(255,255,255,0.03)",
-                    border: `1px solid ${isActive ? "rgba(234,88,12,0.5)" : "rgba(255,255,255,0.06)"}`,
-                    cursor: "pointer",
-                    transition: "all 0.2s ease",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 12,
-                    position: "relative",
-                  }}
-                >
-                  <div
-                    style={{
-                      width: 40,
-                      height: 40,
-                      borderRadius: "50%",
-                      background: isActive ? "#ea580c" : "rgba(255,255,255,0.1)",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      fontWeight: 700,
-                      color: "#fff",
-                      fontSize: 16,
-                    }}
-                  >
-                    {uName ? uName.charAt(0).toUpperCase() : "👤"}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 16 }}>
+            {userBooks.map((b) => (
+              <div
+                key={b.id}
+                onClick={() => navigate(`/reader/${b.id}`)}
+                className="card card-interactive"
+                style={{
+                  padding: 12,
+                  borderRadius: 14,
+                  border: "1px solid var(--border)",
+                  background: "#fafafa",
+                  cursor: "pointer",
+                  transition: "transform 0.15s, box-shadow 0.15s"
+                }}
+              >
+                {b.cover || b.coverImage ? (
+                  <img
+                    src={b.cover || b.coverImage}
+                    alt={b.title}
+                    style={{ width: "100%", aspectRatio: "3/4", objectFit: "cover", borderRadius: 10, marginBottom: 8 }}
+                  />
+                ) : (
+                  <div style={{ width: "100%", aspectRatio: "3/4", background: "linear-gradient(135deg, #f0e9df, #e8ddd0)", borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28, marginBottom: 8 }}>
+                    📖
                   </div>
-
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <span style={{ fontWeight: 700, color: "#fff", fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {uName}
-                      </span>
-                      {isActive && (
-                        <span style={{ fontSize: 10, fontWeight: 700, color: "#22c55e", background: "rgba(34,197,94,0.15)", padding: "1px 6px", borderRadius: 99 }}>
-                          Active
-                        </span>
-                      )}
-                    </div>
-                    <span style={{ fontSize: 12, color: "rgba(255,255,255,0.45)", display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {u.email}
-                    </span>
-                  </div>
-
-                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    <span style={{ fontSize: 14 }} title={u.hasBiometric ? "Biometric Face Enrolled" : "Password Only"}>
-                      {u.hasBiometric ? "👁️" : "🔑"}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={(e) => handleDeleteUser(e, u)}
-                      title="Delete profile"
-                      style={{
-                        background: "none",
-                        border: "none",
-                        color: "rgba(255,255,255,0.3)",
-                        cursor: "pointer",
-                        fontSize: 14,
-                        padding: "2px 4px",
-                      }}
-                      onMouseEnter={(e) => (e.currentTarget.style.color = "#f87171")}
-                      onMouseLeave={(e) => (e.currentTarget.style.color = "rgba(255,255,255,0.3)")}
-                    >
-                      🗑️
-                    </button>
-                  </div>
+                )}
+                <h3 style={{ margin: "0 0 4px", fontSize: 13, fontWeight: 700, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {b.title}
+                </h3>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11, color: "var(--text-muted)" }}>
+                  <span>{b.pageCount || (b.pages ? b.pages.length : 1)} {b.pageCount === 1 ? 'Page' : 'Pages'}</span>
+                  <span style={{ color: "#FF7900", fontWeight: 700 }}>Read →</span>
                 </div>
-              );
-            })}
+              </div>
+            ))}
           </div>
         )}
       </div>

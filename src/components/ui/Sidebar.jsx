@@ -19,6 +19,20 @@ export default function Sidebar() {
   const location = useLocation();
   const [username, setUsername] = useState(() => localStorage.getItem("username"));
 
+  const userRole = localStorage.getItem("role");
+  const isAdmin = userRole === "ADMIN";
+
+  const navItems = [
+    { icon: "⊞", label: "Home", path: "/" },
+    { icon: "📚", label: "Library", path: "/library" },
+    { icon: "🔖", label: "Reading", path: "/continue-reading" },
+    ...(isAdmin ? [
+      { icon: "🗄️", label: "MySQL DB", path: "/database" },
+      { icon: "👥", label: "MySQL Admin", path: "/admin-dashboard" }
+    ] : []),
+    { icon: "⚙️", label: "Settings", path: "/settings" },
+  ];
+
   // Refresh username whenever route changes OR localStorage is updated by another tab/component
   useEffect(() => {
     const refresh = () => setUsername(localStorage.getItem("username"));
@@ -131,9 +145,9 @@ export default function Sidebar() {
           {/* Nav items */}
           <div style={{ display: "flex", flexDirection: "column", flex: 1, marginTop: 18, width: "100%" }}>
             <GooeyNav 
-              items={NAV_ITEMS}
-              activeIndex={Math.max(0, NAV_ITEMS.findIndex(item => item.path === location.pathname))}
-              onChange={(idx) => navigate(NAV_ITEMS[idx].path)}
+              items={navItems}
+              activeIndex={Math.max(0, navItems.findIndex(item => item.path === location.pathname))}
+              onChange={(idx) => navigate(navItems[idx].path)}
             />
           </div>
 
@@ -167,7 +181,7 @@ export default function Sidebar() {
       <nav className="bottom-nav">
         <div style={{ display: 'flex', width: '100%', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ display: 'flex', flex: 1, justifyContent: 'space-around', alignItems: 'center' }}>
-            {NAV_ITEMS.map((item) => (
+            {navItems.map((item) => (
               <button
                 key={item.path}
                 onClick={() => navigate(item.path)}

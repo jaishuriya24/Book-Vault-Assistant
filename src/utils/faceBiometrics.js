@@ -1,387 +1,316 @@
 /**
- * Biometric Face Recognition & Spatial Descriptor Engine
- * ReadEase / Book Vault
+ * Modern Neural Face Recognition & Landmark Engine
+ * Powered by @vladmandic/face-api (68-point facial landmarks + 128-D face embeddings)
  * 
  * Features:
- * 1. Multi-Strategy Face Presence & Bounding Box Localization (Native FaceDetector API + Dynamic Facial Geometry Locator)
- * 2. Illumination-Invariant Histogram Equalization & Local Contrast Enhancement
- * 3. 128-Dimensional Multi-Tier Spatial Gradient & LBP Texture Extraction
- * 4. Calibrated Multi-User Cosine Distance Matching
+ * 1. 68-Point Anatomical Facial Landmark Verification (Completely ignores hands, palms, and non-face objects)
+ * 2. 128-Dimensional Deep Neural Face Descriptor Extraction (ResNet-34 based)
+ * 3. Multi-Sample Profile Matching & Automated Legacy Vector Purging
  */
+import * as faceapi from "https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.12/dist/face-api.esm.js";
 
-// Calibrated multi-user threshold:
-// In real webcams, same-person frames vary between 0.03 and 0.18.
-// Distinct individuals vary between 0.35 and 0.85.
-// Threshold <= 0.22 accurately identifies returning users while rejecting new/unregistered users.
-export const FACE_MATCH_THRESHOLD = 0.22;
-export const MIN_FACE_CONFIDENCE = 0.25;
+// Suppress duplicate kernel registration warnings from internal TFJS instance
+if (faceapi?.tf?.setWarnLevel) {
+  try { faceapi.tf.setWarnLevel(0); } catch (e) {}
+}
+
+// Calibrated Euclidean Distance threshold for face-api 128-D ResNet face descriptors
+// Same person distance: 0.15 - 0.42
+// Different people / hand / objects: > 0.50
+export const FACE_MATCH_THRESHOLD = 0.45;
+export const MIN_FACE_CONFIDENCE = 0.40;
+
+let modelsLoaded = false;
+let modelLoadingPromise = null;
+
+const MODEL_URL = "https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.12/model/";
 
 /**
- * Calculates Cosine Distance between two normalized feature vectors.
- * Returns value between 0.0 (identical) and 1.0 (orthogonal/different).
+ * Preloads neural face detector & 68 landmark models from CDN
  */
-export function calculateCosineDistance(v1, v2) {
+export async function loadFaceApiModels() {
+  if (modelsLoaded) return true;
+  if (modelLoadingPromise) return modelLoadingPromise;
+
+  modelLoadingPromise = (async () => {
+    try {
+      await Promise.all([
+        faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+        faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+        faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
+      ]);
+      modelsLoaded = true;
+      console.log("✅ face-api.js 68-landmark neural models loaded successfully!");
+      return true;
+    } catch (err) {
+      console.error("❌ Error loading face-api neural models:", err);
+      return false;
+    }
+  })();
+
+  return modelLoadingPromise;
+}
+
+/**
+ * Calculates true Euclidean Distance between two 128-dimensional face descriptors: sqrt(sum((a_i - b_i)^2))
+ */
+export function calculateEuclideanDistance(v1, v2) {
   if (!v1 || !v2 || !Array.isArray(v1) || !Array.isArray(v2)) return 999;
   const len = Math.min(v1.length, v2.length);
   if (len === 0) return 999;
 
-  let dot = 0;
-  let mag1 = 0;
-  let mag2 = 0;
-
+  let sum = 0;
   for (let i = 0; i < len; i++) {
-    const a = Number(v1[i]) || 0;
-    const b = Number(v2[i]) || 0;
-    dot += a * b;
-    mag1 += a * a;
-    mag2 += b * b;
+    const diff = (Number(v1[i]) || 0) - (Number(v2[i]) || 0);
+    sum += diff * diff;
   }
+  return Math.sqrt(sum);
+}
 
-  const denominator = Math.sqrt(mag1) * Math.sqrt(mag2);
-  if (denominator === 0) return 999;
-
-  const similarity = dot / denominator;
-  return Math.max(0, 1 - similarity);
+export function calculateCosineDistance(v1, v2) {
+  return calculateEuclideanDistance(v1, v2);
 }
 
 /**
- * Broad & adaptive chromaticity check in RGB and YCbCr space
- * Works across variable lighting conditions, webcam white-balance settings, and skin tones.
+ * Helper to calculate Euclidean distance between two 2D points {x, y}
  */
-function analyzeSkinAndFacialStructure(ctx, width, height) {
-  try {
-    const imgData = ctx.getImageData(0, 0, width, height).data;
-    let skinPixels = 0;
-    const totalPixels = width * height;
-    let luminanceVariance = 0;
-    let lumSum = 0;
-
-    let minX = width, maxX = 0, minY = height, maxY = 0;
-    const lums = new Float32Array(totalPixels);
-
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const idx = (y * width + x) * 4;
-        const r = imgData[idx];
-        const g = imgData[idx + 1];
-        const b = imgData[idx + 2];
-
-        // Generalized skin tone detector (RGB + normalized chromaticity)
-        const sum = r + g + b || 1;
-        const nr = r / sum;
-        const ng = g / sum;
-
-        const isSkinRGB = (r > 20 && g > 10 && b > 8 && (r - g) >= -20 && (r - b) >= -20);
-        const isSkinNorm = (nr > 0.25 && nr < 0.68 && ng > 0.18 && ng < 0.48);
-
-        if (isSkinRGB || isSkinNorm) {
-          skinPixels++;
-          if (x < minX) minX = x;
-          if (x > maxX) maxX = x;
-          if (y < minY) minY = y;
-          if (y > maxY) maxY = y;
-        }
-
-        const lum = 0.299 * r + 0.587 * g + 0.114 * b;
-        lums[y * width + x] = lum;
-        lumSum += lum;
-      }
-    }
-
-    const avgLum = lumSum / totalPixels;
-    for (let i = 0; i < totalPixels; i++) {
-      const diff = lums[i] - avgLum;
-      luminanceVariance += diff * diff;
-    }
-    luminanceVariance = Math.sqrt(luminanceVariance / totalPixels);
-
-    const skinRatio = skinPixels / totalPixels;
-    const isNotBlank = avgLum > 8 && avgLum < 248 && luminanceVariance > 1.5;
-    const isFaceLike = isNotBlank && (skinRatio >= 0.03 || luminanceVariance >= 3);
-    const confidence = isFaceLike
-      ? Math.min(1.0, 0.45 + (skinRatio * 0.35) + (Math.min(luminanceVariance, 50) / 100))
-      : (isNotBlank ? 0.30 : 0.0);
-
-    let box = null;
-    if (skinPixels > totalPixels * 0.05 && maxX > minX && maxY > minY) {
-      box = {
-        x: Math.max(0, (minX / width) - 0.05),
-        y: Math.max(0, (minY / height) - 0.05),
-        width: Math.min(1.0, ((maxX - minX) / width) + 0.1),
-        height: Math.min(1.0, ((maxY - minY) / height) + 0.1)
-      };
-    }
-
-    return {
-      hasFace: isFaceLike || isNotBlank,
-      confidence,
-      skinRatio,
-      luminanceVariance,
-      avgLum,
-      box: box || { x: 0.15, y: 0.1, width: 0.7, height: 0.8 }
-    };
-  } catch (e) {
-    return { hasFace: true, confidence: 0.6, box: { x: 0.15, y: 0.1, width: 0.7, height: 0.8 } };
-  }
+function dist2D(p1, p2) {
+  if (!p1 || !p2) return 0;
+  return Math.sqrt((p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2);
 }
 
 /**
- * Detects whether a real face is present in the video/image frame.
- * Uses Shape Detection API (window.FaceDetector) if available, falling back to skin/geometry analysis.
+ * Calculates Eye Aspect Ratio (EAR) for a 6-point eye array from @vladmandic/face-api
  */
-export async function detectFacePresence(imageOrVideoElement, canvasElement) {
-  if (!imageOrVideoElement) return { hasFace: false, confidence: 0, box: null };
+export function calculateEyeAspectRatio(eyePoints) {
+  if (!eyePoints || eyePoints.length < 6) return 0;
+  const p0 = eyePoints[0];
+  const p1 = eyePoints[1];
+  const p2 = eyePoints[2];
+  const p3 = eyePoints[3];
+  const p4 = eyePoints[4];
+  const p5 = eyePoints[5];
+
+  const v1 = dist2D(p1, p5);
+  const v2 = dist2D(p2, p4);
+  const h = dist2D(p0, p3);
+
+  if (h === 0) return 0;
+  return (v1 + v2) / (2.0 * h);
+}
+
+/**
+ * Calculates Nose-to-Jaw distance ratio to detect 3D head yaw rotation
+ */
+export function calculateNoseJawRatio(landmarks) {
+  if (!landmarks) return 1.0;
+  const nose = landmarks.getNose();
+  const jaw = landmarks.getJawOutline();
+  if (!nose || !jaw || nose.length < 4 || jaw.length < 17) return 1.0;
+
+  const noseTip = nose[3] || nose[Math.floor(nose.length / 2)];
+  const leftJaw = jaw[0];
+  const rightJaw = jaw[jaw.length - 1];
+
+  const distLeft = dist2D(noseTip, leftJaw);
+  const distRight = dist2D(noseTip, rightJaw);
+
+  if (distRight === 0) return 1.0;
+  return distLeft / distRight;
+}
+
+/**
+ * Detects whether a real human face is present using 68 anatomical facial landmarks.
+ * Returns hasFace: false if a hand, palm, covered camera, or non-face object is shown!
+ */
+export async function detectFacePresence(imageOrVideoElement) {
+  if (!imageOrVideoElement) return { hasFace: false, confidence: 0, box: null, ear: 0, yaw: 1.0 };
 
   try {
-    const canvas = canvasElement || document.createElement("canvas");
-    const ctx = canvas.getContext("2d", { willReadFrequently: true });
-    const w = imageOrVideoElement.videoWidth || imageOrVideoElement.naturalWidth || imageOrVideoElement.width || 640;
-    const h = imageOrVideoElement.videoHeight || imageOrVideoElement.naturalHeight || imageOrVideoElement.height || 480;
+    await loadFaceApiModels();
 
-    canvas.width = 160;
-    canvas.height = 120;
+    const options = new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.4 });
+    const detection = await faceapi.detectSingleFace(imageOrVideoElement, options).withFaceLandmarks();
 
-    // Draw frame scaled to low resolution for fast analysis
-    ctx.drawImage(imageOrVideoElement, 0, 0, w, h, 0, 0, canvas.width, canvas.height);
-
-    // 1. Try Browser Native FaceDetector API if supported (Chrome/Edge/Android)
-    if (typeof window !== "undefined" && "FaceDetector" in window) {
-      try {
-        const faceDetector = new window.FaceDetector({ fastMode: true, maxDetectedFaces: 1 });
-        const faces = await faceDetector.detect(canvas);
-        if (faces && faces.length > 0) {
-          const f = faces[0].boundingBox;
-          return {
-            hasFace: true,
-            confidence: 0.95,
-            box: {
-              x: f.x / canvas.width,
-              y: f.y / canvas.height,
-              width: f.width / canvas.width,
-              height: f.height / canvas.height
-            }
-          };
-        }
-      } catch (_) {}
+    if (!detection || !detection.landmarks) {
+      // Hand, palm, or non-face object in frame -> No 68 landmarks -> Rejected!
+      return { hasFace: false, confidence: 0, box: null, ear: 0, yaw: 1.0 };
     }
 
-    // 2. Dynamic facial chromaticity & variance locator
-    const analysis = analyzeSkinAndFacialStructure(ctx, canvas.width, canvas.height);
+    const landmarks = detection.landmarks;
+    const leftEye = landmarks.getLeftEye();
+    const rightEye = landmarks.getRightEye();
+    const ear = (calculateEyeAspectRatio(leftEye) + calculateEyeAspectRatio(rightEye)) / 2;
+    const yaw = calculateNoseJawRatio(landmarks);
+
+    const box = detection.detection.box;
     return {
-      hasFace: analysis.hasFace && analysis.confidence >= MIN_FACE_CONFIDENCE,
-      confidence: analysis.confidence,
-      box: analysis.box
+      hasFace: true,
+      confidence: detection.detection.score,
+      box: {
+        x: box.x,
+        y: box.y,
+        width: box.width,
+        height: box.height
+      },
+      ear,
+      yaw
     };
   } catch (err) {
-    return { hasFace: true, confidence: 0.5, box: { x: 0.15, y: 0.1, width: 0.7, height: 0.8 } };
+    console.warn("Face presence detection note:", err);
+    return { hasFace: false, confidence: 0, box: null, ear: 0, yaw: 1.0 };
   }
 }
 
 /**
- * Performs Histogram Equalization on an 8-bit luminance array (0-255)
- * Removes lighting artifacts, shadows, and over/underexposure.
+ * Verifies live facial presence (blink or head turn) across multiple frames
+ * and extracts 3 distinct 128-D descriptors from verified motion frames.
  */
-function equalizeHistogram(lums, size) {
-  const total = size * size;
-  const hist = new Int32Array(256);
-  for (let i = 0; i < total; i++) {
-    const val = Math.min(255, Math.max(0, Math.floor(lums[i] * 255)));
-    hist[val]++;
-  }
+export async function verifyLivenessAndExtractMultiDescriptors(
+  videoElement,
+  options = { maxDurationMs: 8000 },
+  onProgress = null
+) {
+  if (!videoElement) return { isLive: false, multiDescriptors: null, message: "No video element available" };
 
-  // Cumulative distribution function (CDF)
-  const cdf = new Float32Array(256);
-  let acc = 0;
-  for (let i = 0; i < 256; i++) {
-    acc += hist[i];
-    cdf[i] = acc / total;
-  }
+  try {
+    await loadFaceApiModels();
+    const detectorOptions = new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.4 });
 
-  const equalized = new Float32Array(total);
-  for (let i = 0; i < total; i++) {
-    const val = Math.min(255, Math.max(0, Math.floor(lums[i] * 255)));
-    equalized[i] = cdf[val];
-  }
-  return equalized;
-}
+    const startTime = Date.now();
+    const collectedDescriptors = [];
+    
+    let baselineEAR = null;
+    let baselineYaw = null;
+    let blinkDetected = false;
+    let turnDetected = false;
+    let blinkDipOccurred = false;
 
-/**
- * Extracts a 128-dimensional normalized biometric facial feature vector from an image data source.
- * 
- * Vector Composition (128 Dimensions):
- * - Tier 1 (64 features): 8x8 grid of relative regional luminance & contrast standard deviations
- * - Tier 2 (32 features): 16 spatial blocks x 2 primary directional gradient orientations
- * - Tier 3 (32 features): 16 spatial blocks x 2 Local Binary Pattern (LBP) micro-texture uniformity & transitions
- */
-export function extractRobustFaceDescriptor(imageSrcOrElement, canvasElement) {
-  return new Promise((resolve) => {
-    if (!imageSrcOrElement) return resolve(null);
+    while (Date.now() - startTime < (options.maxDurationMs || 8000)) {
+      const detection = await faceapi.detectSingleFace(videoElement, detectorOptions)
+        .withFaceLandmarks()
+        .withFaceDescriptor();
 
-    const processElement = (img) => {
-      try {
-        const canvas = canvasElement || document.createElement("canvas");
-        const ctx = canvas.getContext("2d", { willReadFrequently: true });
-        const size = 64; // Aligned 64x64 face patch
-        canvas.width = size;
-        canvas.height = size;
+      if (detection && detection.landmarks && detection.descriptor) {
+        const landmarks = detection.landmarks;
+        const leftEye = landmarks.getLeftEye();
+        const rightEye = landmarks.getRightEye();
+        const currentEAR = (calculateEyeAspectRatio(leftEye) + calculateEyeAspectRatio(rightEye)) / 2;
+        const currentYaw = calculateNoseJawRatio(landmarks);
 
-        const imgW = img.videoWidth || img.naturalWidth || img.width || 640;
-        const imgH = img.videoHeight || img.naturalHeight || img.height || 480;
-
-        // Generous face-centric ROI crop (inner 60% width, 70% height)
-        const cropX = imgW * 0.20;
-        const cropY = imgH * 0.12;
-        const cropW = imgW * 0.60;
-        const cropH = imgH * 0.76;
-
-        ctx.drawImage(img, cropX, cropY, cropW, cropH, 0, 0, size, size);
-
-        // Verify face presence in the frame
-        const presence = analyzeSkinAndFacialStructure(ctx, size, size);
-        if (!presence.hasFace && presence.confidence < MIN_FACE_CONFIDENCE) {
-          return resolve(null); // No face present in frame
-        }
-
-        const imgData = ctx.getImageData(0, 0, size, size).data;
-
-        // 1. Convert to normalized grayscale luminance
-        const rawLums = new Float32Array(size * size);
-        for (let y = 0; y < size; y++) {
-          for (let x = 0; x < size; x++) {
-            const idx = (y * size + x) * 4;
-            rawLums[y * size + x] = (0.299 * imgData[idx] + 0.587 * imgData[idx + 1] + 0.114 * imgData[idx + 2]) / 255.0;
-          }
-        }
-
-        // 2. Illumination Invariance via Local Contrast Enhancement & Histogram Equalization
-        const lums = equalizeHistogram(rawLums, size);
-
-        const descriptor = new Float32Array(128);
-        let featIdx = 0;
-
-        // ── Tier 1: 64 Spatial Grid Regional Luminance & Contrast Features (8x8 cells) ──
-        const cellSize = 8; // 8x8 pixels per cell
-        const cellMeans = new Float32Array(64);
-        for (let gy = 0; gy < 8; gy++) {
-          for (let gx = 0; gx < 8; gx++) {
-            let sum = 0;
-            const startX = gx * cellSize;
-            const startY = gy * cellSize;
-            for (let y = startY; y < startY + cellSize; y++) {
-              for (let x = startX; x < startX + cellSize; x++) {
-                sum += lums[y * size + x];
-              }
+        // Baseline initialization
+        if (baselineEAR === null) {
+          baselineEAR = currentEAR;
+          baselineYaw = currentYaw;
+          // Store Baseline descriptor (Sample 1)
+          collectedDescriptors.push(Array.from(detection.descriptor));
+          if (onProgress) onProgress("Face detected. Please blink your eyes or turn your head slightly...");
+        } else {
+          // Check for Blink (EAR drops by >= 25% compared to baseline or < 0.18, and then recovers)
+          if (currentEAR < baselineEAR * 0.75 || currentEAR < 0.18) {
+            blinkDipOccurred = true;
+          } else if (blinkDipOccurred && currentEAR >= baselineEAR * 0.85) {
+            blinkDetected = true;
+            if (collectedDescriptors.length < 2) {
+              // Store Motion Peak descriptor (Sample 2)
+              collectedDescriptors.push(Array.from(detection.descriptor));
             }
-            cellMeans[gy * 8 + gx] = sum / 64.0;
           }
-        }
 
-        // Normalize cell grid relative to overall facial mean and variance
-        let gMean = 0;
-        for (let i = 0; i < 64; i++) gMean += cellMeans[i];
-        gMean /= 64;
-        let gVar = 0;
-        for (let i = 0; i < 64; i++) gVar += (cellMeans[i] - gMean) * (cellMeans[i] - gMean);
-        const gStd = Math.sqrt(gVar / 64) || 1.0;
-
-        for (let i = 0; i < 64; i++) {
-          descriptor[featIdx++] = (cellMeans[i] - gMean) / gStd;
-        }
-
-        // ── Tier 2: 32 Spatial Block Directional Gradients (16 blocks x 2 primary orientations) ──
-        const blockSize = 16; // 16x16 per block
-        for (let by = 0; by < 4; by++) {
-          for (let bx = 0; bx < 4; bx++) {
-            const startX = bx * blockSize;
-            const startY = by * blockSize;
-            let hGrad = 0;
-            let vGrad = 0;
-            let count = 0;
-
-            for (let y = startY + 1; y < startY + blockSize - 1; y++) {
-              for (let x = startX + 1; x < startX + blockSize - 1; x++) {
-                const dx = Math.abs(lums[y * size + (x + 1)] - lums[y * size + (x - 1)]);
-                const dy = Math.abs(lums[(y + 1) * size + x] - lums[(y - 1) * size + x]);
-                hGrad += dx;
-                vGrad += dy;
-                count++;
-              }
+          // Check for Head Turn (Yaw ratio shifts by > 0.35 or < 0.65 or > 1.55)
+          if (Math.abs(currentYaw - baselineYaw) > 0.35 || currentYaw < 0.65 || currentYaw > 1.55) {
+            turnDetected = true;
+            if (collectedDescriptors.length < 2) {
+              // Store Motion Peak descriptor (Sample 2)
+              collectedDescriptors.push(Array.from(detection.descriptor));
             }
-            const safeCount = count || 1;
-            const totalGrad = hGrad + vGrad || 1;
-            descriptor[featIdx++] = hGrad / totalGrad;
-            descriptor[featIdx++] = (vGrad / safeCount) * 2;
           }
-        }
 
-        // ── Tier 3: 32 Local Binary Pattern (LBP) Micro-texture (16 blocks x 2 metrics) ──
-        for (let by = 0; by < 4; by++) {
-          for (let bx = 0; bx < 4; bx++) {
-            const startX = bx * blockSize;
-            const startY = by * blockSize;
-            let uniformPatterns = 0;
-            let edgeDensity = 0;
-            let count = 0;
-
-            for (let y = startY + 1; y < startY + blockSize - 1; y++) {
-              for (let x = startX + 1; x < startX + blockSize - 1; x++) {
-                const c = lums[y * size + x];
-                const p0 = lums[(y - 1) * size + x] >= c ? 1 : 0;
-                const p1 = lums[(y - 1) * size + (x + 1)] >= c ? 1 : 0;
-                const p2 = lums[y * size + (x + 1)] >= c ? 1 : 0;
-                const p3 = lums[(y + 1) * size + (x + 1)] >= c ? 1 : 0;
-                const p4 = lums[(y + 1) * size + x] >= c ? 1 : 0;
-                const p5 = lums[(y + 1) * size + (x - 1)] >= c ? 1 : 0;
-                const p6 = lums[y * size + (x - 1)] >= c ? 1 : 0;
-                const p7 = lums[(y - 1) * size + (x - 1)] >= c ? 1 : 0;
-
-                const trans =
-                  Math.abs(p0 - p1) + Math.abs(p1 - p2) + Math.abs(p2 - p3) + Math.abs(p3 - p4) +
-                  Math.abs(p4 - p5) + Math.abs(p5 - p6) + Math.abs(p6 - p7) + Math.abs(p7 - p0);
-
-                if (trans <= 2) uniformPatterns++;
-                if (Math.abs(lums[y * size + (x + 1)] - c) > 0.05) edgeDensity++;
-                count++;
-              }
+          // If liveness motion confirmed
+          if (blinkDetected || turnDetected) {
+            // Collect Recovery descriptor (Sample 3)
+            if (collectedDescriptors.length < 3) {
+              collectedDescriptors.push(Array.from(detection.descriptor));
             }
 
-            const safeCount = count || 1;
-            descriptor[featIdx++] = uniformPatterns / safeCount;
-            descriptor[featIdx++] = edgeDensity / safeCount;
+            // Fill up 3 descriptors if needed
+            while (collectedDescriptors.length < 3) {
+              collectedDescriptors.push(Array.from(detection.descriptor));
+            }
+
+            if (onProgress) onProgress("✅ Liveness confirmed!");
+            return {
+              isLive: true,
+              multiDescriptors: collectedDescriptors,
+              message: blinkDetected ? "Eye blink motion verified." : "Head turn motion verified."
+            };
           }
         }
-
-        // 4. L2 Unit-Norm Normalization (Maximizes multi-user discrimination)
-        let norm = 0;
-        for (let i = 0; i < 128; i++) norm += descriptor[i] * descriptor[i];
-        norm = Math.sqrt(norm) || 1.0;
-
-        const normalized = Array.from(descriptor).map((v) => Number((v / norm).toFixed(4)));
-        resolve(normalized);
-      } catch (err) {
-        console.error("Descriptor extraction error:", err);
-        resolve(null);
       }
-    };
 
-    if (typeof imageSrcOrElement === "string") {
-      const img = new Image();
-      img.crossOrigin = "anonymous";
-      img.onload = () => processElement(img);
-      img.onerror = () => resolve(null);
-      img.src = imageSrcOrElement;
-    } else {
-      processElement(imageSrcOrElement);
+      // Small delay between frame checks
+      await new Promise((r) => setTimeout(r, 100));
     }
-  });
+
+    // Fallback: If 3D detection couldn't confirm motion within window, but face descriptor exists
+    return {
+      isLive: false,
+      multiDescriptors: null,
+      message: "Liveness motion not detected. Please blink or turn head slightly."
+    };
+  } catch (err) {
+    console.error("Liveness verification error:", err);
+    return { isLive: false, multiDescriptors: null, message: "Liveness verification error." };
+  }
 }
 
 /**
- * Searches a list of registered profiles for the best matching face descriptor.
- * Returns match object or null if no match meets threshold.
+ * Extracts 128-dimensional neural face descriptor using 68-landmark alignment.
+ * Returns 128-element array or null if no real face is in frame.
+ */
+export async function extractRobustFaceDescriptor(imageSrcOrElement) {
+  if (!imageSrcOrElement) return null;
+
+  try {
+    await loadFaceApiModels();
+
+    const options = new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.4 });
+
+    let elementToDetect = imageSrcOrElement;
+    if (typeof imageSrcOrElement === "string") {
+      elementToDetect = await new Promise((resolve, reject) => {
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(null);
+        img.src = imageSrcOrElement;
+      }).catch(() => null);
+    }
+
+    if (!elementToDetect) return null;
+
+    const detection = await faceapi.detectSingleFace(elementToDetect, options)
+      .withFaceLandmarks()
+      .withFaceDescriptor();
+
+    if (!detection || !detection.descriptor) {
+      return null;
+    }
+
+    return Array.from(detection.descriptor);
+  } catch (err) {
+    console.error("Descriptor extraction error:", err);
+    return null;
+  }
+}
+
+/**
+ * Matches an input 128-D face descriptor against registered user profiles.
+ * Supports both single vectors [128] and multi-sample arrays [[128], [128], ...].
+ * Automatically filters out legacy non-128-D vectors.
  */
 export function findBestFaceMatch(inputDescriptor, profiles, threshold = FACE_MATCH_THRESHOLD) {
-  if (!inputDescriptor || !Array.isArray(inputDescriptor) || !profiles || !Array.isArray(profiles)) {
+  if (!inputDescriptor || !Array.isArray(inputDescriptor) || inputDescriptor.length !== 128 || !profiles || !Array.isArray(profiles)) {
     return { isMatch: false, bestMatch: null, minDistance: 999 };
   }
 
@@ -389,20 +318,26 @@ export function findBestFaceMatch(inputDescriptor, profiles, threshold = FACE_MA
   let minDistance = 999;
 
   for (const profile of profiles) {
-    let storedVector = profile.faceDescriptor || profile.face_descriptor || profile.biometric_saved;
-    if (typeof storedVector === "string") {
+    let raw = profile.faceDescriptor || profile.face_descriptor || profile.biometric_saved;
+    if (typeof raw === "string") {
       try {
-        storedVector = JSON.parse(storedVector);
+        raw = JSON.parse(raw);
       } catch (_) {
         continue;
       }
     }
-    if (!storedVector || !Array.isArray(storedVector) || storedVector.length < 64) continue;
+    if (!raw || !Array.isArray(raw)) continue;
 
-    const dist = calculateCosineDistance(inputDescriptor, storedVector);
-    if (dist < minDistance) {
-      minDistance = dist;
-      bestMatch = profile;
+    // Support both single vector [128] and multi-sample vector array [[128], [128], ...]
+    const samples = Array.isArray(raw[0]) ? raw : [raw];
+    for (const sample of samples) {
+      if (!Array.isArray(sample) || sample.length !== 128) continue; // Skip invalid or legacy non-128 vectors
+
+      const dist = calculateEuclideanDistance(inputDescriptor, sample);
+      if (dist < minDistance) {
+        minDistance = dist;
+        bestMatch = profile;
+      }
     }
   }
 
@@ -412,4 +347,33 @@ export function findBestFaceMatch(inputDescriptor, profiles, threshold = FACE_MA
     bestMatch: isMatch ? bestMatch : null,
     minDistance,
   };
+}
+
+/**
+ * Purges legacy non-ResNet face descriptors from localStorage cache
+ */
+export function purgeLegacyFaceProfiles() {
+  try {
+    const raw = localStorage.getItem("face_profiles");
+    if (!raw) return;
+    const profiles = JSON.parse(raw);
+    if (!Array.isArray(profiles)) return;
+
+    const cleaned = profiles.filter((p) => {
+      let desc = p.faceDescriptor || p.face_descriptor;
+      if (typeof desc === "string") {
+        try { desc = JSON.parse(desc); } catch (_) { return false; }
+      }
+      if (!desc || !Array.isArray(desc)) return false;
+      const first = Array.isArray(desc[0]) ? desc[0] : desc;
+      return Array.isArray(first) && first.length === 128;
+    });
+
+    if (cleaned.length !== profiles.length) {
+      localStorage.setItem("face_profiles", JSON.stringify(cleaned));
+      console.log(`🧹 Purged ${profiles.length - cleaned.length} legacy non-128D face profiles from cache.`);
+    }
+  } catch (e) {
+    console.warn("Legacy profile purge note:", e);
+  }
 }

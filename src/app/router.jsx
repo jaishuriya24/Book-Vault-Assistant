@@ -5,6 +5,8 @@ import SignIn from "../screens/auth/SignIn";
 import SignUp from "../screens/auth/SignUp";
 import OTPVerify from "../screens/auth/OTPVerify";
 import FaceLogin from "../screens/auth/FaceLogin";
+import AdminSignIn from "../screens/auth/AdminSignIn";
+import ProtectedRoute from "../components/auth/ProtectedRoute";
 
 /* ADMIN */
 import AdminDashboard from "../components/home/AdminDashboard";
@@ -38,6 +40,12 @@ export const router = createBrowserRouter([
   {
     path: "/otp",
     element: <OTPVerify />,
+  },
+
+  /* HIDDEN ADMIN PORTAL */
+  {
+    path: "/admin-login",
+    element: <AdminSignIn />,
   },
 
   /* CORE APP */
@@ -81,9 +89,14 @@ export const router = createBrowserRouter([
     path: "/settings",
     element: <Placeholder title="Settings" />,
   },
-  /* ADMIN DASHBOARD */
+
+  /* PROTECTED ADMIN DASHBOARD */
   {
     path: "/admin-dashboard",
-    element: <AdminDashboard />,
+    element: (
+      <ProtectedRoute>
+        <AdminDashboard />
+      </ProtectedRoute>
+    ),
   },
 ]);

@@ -71,15 +71,18 @@ public class UserController {
      */
     @GetMapping("/readers")
     public ResponseEntity<?> getReaderUsers() {
-        List<AppUser> readers = appUserRepository.findByRoleInOrderByIdAsc(
-                List.of("READER", "USER", "EMPLOYEE"));
+        List<AppUser> readers = appUserRepository.findAll();
 
         List<Map<String, Object>> result = readers.stream().map(u -> {
             Map<String, Object> row = new HashMap<>();
             row.put("userId", u.getId());
+            row.put("id", u.getId());
             row.put("userName", u.getName());
-            row.put("role", u.getRole());
+            row.put("name", u.getName());
+            row.put("email", u.getEmail());
+            row.put("role", u.getRole() != null ? u.getRole() : "READER");
             row.put("hasBiometric", u.getFaceDescriptor() != null && !u.getFaceDescriptor().isBlank());
+            // 🛡️ SECURITY: Never expose raw faceDescriptor biometric vectors over public endpoints
             return row;
         }).collect(Collectors.toList());
 

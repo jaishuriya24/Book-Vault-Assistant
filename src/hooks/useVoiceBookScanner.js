@@ -1,4 +1,6 @@
 import { useState, useRef, useCallback } from 'react';
+import { vibrateSuccess, vibrateError, vibrateNotice } from '../utils/haptics';
+import { cleanPageArtifacts } from '../utils/readingContinuity';
 
 const speak = (text, { lang = "ta-IN" } = {}) => {
   return new Promise((resolve) => {
@@ -41,6 +43,7 @@ export function useVoiceBookScanner(onSave) {
   };
 
   const startScan = useCallback(() => {
+    window.dispatchEvent(new Event("bookvault:pause-global-voice"));
     setStatus('confirming');
     retryCount.current = 0;
     speakAndSet("Oru book scan panna virumburingala? Yes or No sollu.");
@@ -54,6 +57,7 @@ export function useVoiceBookScanner(onSave) {
         } else {
           speakAndSet("Sari, scan cancel panniyachu.");
           setStatus('idle');
+          window.dispatchEvent(new Event("bookvault:resume-global-voice"));
         }
       };
       recognition.onerror = () => {
@@ -128,6 +132,7 @@ export function useVoiceBookScanner(onSave) {
       console.log(`[VoiceBookScanner] Laplacian Variance: ${variance.toFixed(2)} (Threshold: ${BLUR_THRESHOLD})`);
       
       if (variance < BLUR_THRESHOLD) {
+        vibrateError();
         if (retryCount.current < MAX_RETRIES) {
           retryCount.current++;
           speakAndSet("Padam konjam mangala irukku. Asaikkama marubadiyum try pannu.");
@@ -142,6 +147,7 @@ export function useVoiceBookScanner(onSave) {
       }
       
       // Clear image
+      vibrateNotice();
       speakAndSet("Padam theliva irukku. Ezhutha edukkuren. Konjam wait pannu...");
       
       try {
@@ -150,16 +156,19 @@ export function useVoiceBookScanner(onSave) {
         const { data: { text } } = await worker.recognize(img.src);
         await worker.terminate();
         
-        const cleanText = text.trim();
+        const cleanText = cleanPageArtifacts(text);
         if (!cleanText) {
+          vibrateError();
           speakAndSet("Intha page la ezhuthu edhuvum illai.");
           setStatus('idle');
           return;
         }
         
+        vibrateSuccess();
         scannedTextRef.current = cleanText;
         askForTitle();
       } catch (err) {
+        vibrateError();
         console.error("OCR Error:", err);
         speakAndSet("Ezhutha padikkum pothu problem. Appuram try pannu.");
         setStatus('idle');

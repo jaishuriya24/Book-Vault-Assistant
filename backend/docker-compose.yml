@@ -1,17 +1,91 @@
 version: "3.9"
 
 services:
-  postgres:
-    image: postgres:16-alpine
+  mysql-db:
+    image: mysql:8.0
+    container_name: bookvault-mysql
     restart: unless-stopped
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: book_vault
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: bookvault
+      MYSQL_USER: farmer
+      MYSQL_PASSWORD: farmer123
     ports:
-      - "5432:5432"
+      - "3306:3306"
     volumes:
-      - book_vault_pgdata:/var/lib/postgresql/data
+      - mysql_bookvault_data:/var/lib/mysql
+
+  auth-service:
+    build:
+      context: ./Two Services/auth-service
+      dockerfile: Dockerfile
+    container_name: bookvault-auth-service
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql-db:3306/bookvault?createDatabaseIfNotExist=true&useSSL=false&allowPublicKeyRetrieval=true
+      SPRING_DATASOURCE_USERNAME: farmer
+      SPRING_DATASOURCE_PASSWORD: farmer123
+    depends_on:
+      - mysql-db
+
+  book-service:
+    build:
+      context: ./Two Services/book-service
+      dockerfile: Dockerfile
+    container_name: bookvault-book-service
+    restart: unless-stopped
+    ports:
+      - "8082:8082"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql-db:3306/bookvault?createDatabaseIfNotExist=true&useSSL=false&allowPublicKeyRetrieval=true
+      SPRING_DATASOURCE_USERNAME: farmer
+      SPRING_DATASOURCE_PASSWORD: farmer123
+    depends_on:
+      - mysql-db
+
+  employee-service:
+    build:
+      context: ./Two Services/employee-service
+      dockerfile: Dockerfile
+    container_name: bookvault-employee-service
+    restart: unless-stopped
+    ports:
+      - "8083:8083"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql-db:3306/bookvault?createDatabaseIfNotExist=true&useSSL=false&allowPublicKeyRetrieval=true
+      SPRING_DATASOURCE_USERNAME: farmer
+      SPRING_DATASOURCE_PASSWORD: farmer123
+    depends_on:
+      - mysql-db
+
+  ai-vision-voice-service:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    container_name: bookvault-ai-service
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      PORT: 3001
+      DATABASE_URL: mysql+pymysql://farmer:farmer123@mysql-db:3306/bookvault
+    depends_on:
+      - mysql-db
+
+  frontend-client:
+    build:
+      context: ../
+      dockerfile: Dockerfile
+    container_name: bookvault-frontend
+    restart: unless-stopped
+    ports:
+      - "5173:5173"
+    depends_on:
+      - auth-service
+      - book-service
+      - ai-vision-voice-service
 
 volumes:
-  book_vault_pgdata:
+  mysql_bookvault_data:

@@ -19,6 +19,9 @@ public class RegisterRequest {
     // Defaults to EMPLOYEE when left blank - see AuthController.register().
     private String role;
 
+    // Optional 128-D facial descriptor vector
+    private Object faceDescriptor;
+
     public String getName() { return name; }
     public void setName(String name) { this.name = name; }
     public String getEmail() { return email; }
@@ -27,4 +30,6 @@ public class RegisterRequest {
     public void setPassword(String password) { this.password = password; }
     public String getRole() { return role; }
     public void setRole(String role) { this.role = role; }
+    public Object getFaceDescriptor() { return faceDescriptor; }
+    public void setFaceDescriptor(Object faceDescriptor) { this.faceDescriptor = faceDescriptor; }
 }

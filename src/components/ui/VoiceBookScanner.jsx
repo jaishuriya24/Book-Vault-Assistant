@@ -2,7 +2,7 @@ import React from 'react';
 import { useVoiceBookScanner } from '../../hooks/useVoiceBookScanner';
 import { Mic, Camera, X } from 'lucide-react';
 
-export default function VoiceBookScanner({ onSave }) {
+export default function VoiceBookScanner({ onSave, showTriggerButton = false }) {
   const { 
     startScan, 
     cancelScan, 
@@ -13,7 +13,7 @@ export default function VoiceBookScanner({ onSave }) {
   } = useVoiceBookScanner(onSave);
 
   return (
-    <div className="voice-scanner-container" style={{ position: 'relative' }}>
+    <div className="voice-scanner-container">
       
       {/* Hidden Native Camera Input */}
       <input
@@ -35,8 +35,8 @@ export default function VoiceBookScanner({ onSave }) {
         {promptText}
       </div>
 
-      {/* UI for Sighted / Low Vision users to trigger or cancel */}
-      {status === 'idle' ? (
+      {/* Optional trigger button (if explicitly requested) */}
+      {status === 'idle' && showTriggerButton && (
         <button 
           onClick={startScan}
           className="voice-scan-btn"
@@ -54,71 +54,94 @@ export default function VoiceBookScanner({ onSave }) {
             border: 'none',
             cursor: 'pointer',
             boxShadow: '0 4px 14px rgba(255, 69, 0, 0.4)',
-            width: '100%',
             fontSize: '18px'
           }}
         >
           <Camera size={24} />
           <span>Voice Scan</span>
         </button>
-      ) : (
+      )}
+
+      {/* Active Modal Overlay when scanning */}
+      {status !== 'idle' && (
         <div 
-          className="voice-scan-active-card"
+          className="voice-scan-modal-overlay"
           style={{
-            background: '#1A1A1A',
-            border: '1px solid #333',
-            borderRadius: '16px',
-            padding: '20px',
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            gap: '16px',
-            textAlign: 'center'
-          }}
-        >
-          <div className="status-icon" style={{
-            width: '64px',
-            height: '64px',
-            borderRadius: '50%',
-            background: 'rgba(255, 121, 0, 0.1)',
+            position: 'fixed',
+            inset: 0,
+            zIndex: 9999,
+            background: 'rgba(0, 0, 0, 0.75)',
+            backdropFilter: 'blur(8px)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            color: '#FF7900'
-          }}>
-            {status === 'confirming' || status === 'askingTitle' ? (
-              <Mic size={32} className="pulse-anim" />
-            ) : (
-              <Camera size={32} className={status === 'analyzing' ? 'pulse-anim' : ''} />
-            )}
-          </div>
-          
-          <div>
-            <h3 style={{ margin: '0 0 8px 0', color: 'white', fontSize: '20px' }}>Scanning...</h3>
-            <p style={{ margin: 0, color: '#aaa', fontSize: '16px' }} aria-hidden="true">
-              {promptText}
-            </p>
-          </div>
-
-          <button 
-            onClick={cancelScan}
+            padding: '20px'
+          }}
+        >
+          <div 
+            className="voice-scan-active-card"
             style={{
-              background: 'transparent',
-              color: '#ef4444',
-              border: '1px solid #ef4444',
-              padding: '12px 24px',
-              borderRadius: '999px',
+              background: '#1A1A1A',
+              border: '1px solid #333',
+              borderRadius: '24px',
+              padding: '32px',
+              maxWidth: '420px',
+              width: '100%',
               display: 'flex',
+              flexDirection: 'column',
               alignItems: 'center',
-              gap: '8px',
-              fontWeight: '600',
-              cursor: 'pointer',
-              marginTop: '8px'
+              gap: '20px',
+              textAlign: 'center',
+              boxShadow: '0 20px 50px rgba(0, 0, 0, 0.5)'
             }}
           >
-            <X size={18} />
-            Cancel
-          </button>
+            <div className="status-icon" style={{
+              width: '72px',
+              height: '72px',
+              borderRadius: '50%',
+              background: 'rgba(255, 121, 0, 0.15)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: '#FF7900'
+            }}>
+              {status === 'confirming' || status === 'askingTitle' ? (
+                <Mic size={36} className="pulse-anim" />
+              ) : (
+                <Camera size={36} className={status === 'analyzing' ? 'pulse-anim' : ''} />
+              )}
+            </div>
+            
+            <div>
+              <h3 style={{ margin: '0 0 8px 0', color: 'white', fontSize: '22px', fontWeight: 'bold' }}>
+                {status === 'confirming' ? 'Voice Command' : status === 'analyzing' ? 'Processing Image...' : 'Book Scanner'}
+              </h3>
+              <p style={{ margin: 0, color: '#ccc', fontSize: '16px', lineHeight: '1.5' }}>
+                {promptText}
+              </p>
+            </div>
+
+            <button 
+              onClick={cancelScan}
+              style={{
+                background: 'transparent',
+                color: '#ef4444',
+                border: '1px solid #ef4444',
+                padding: '12px 28px',
+                borderRadius: '999px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                fontWeight: '600',
+                cursor: 'pointer',
+                marginTop: '8px',
+                transition: 'all 0.2s'
+              }}
+            >
+              <X size={18} />
+              Cancel Scan
+            </button>
+          </div>
         </div>
       )}
 

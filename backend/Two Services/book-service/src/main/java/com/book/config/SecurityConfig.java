@@ -35,7 +35,7 @@ public class SecurityConfig {
                     session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
                     .requestMatchers("/error").permitAll()
-                    .requestMatchers("/api/books/capture", "/api/books/detector-status", "/api/books/convert-objects", "/api/parse-intent", "/api/save-page").permitAll()
+                    .requestMatchers("/api/books/capture", "/api/books/detector-status", "/api/books/convert-objects", "/api/parse-intent", "/api/parse-voice", "/api/save-page").permitAll()
                     .requestMatchers("/api/books/**").permitAll()
                     .anyRequest().permitAll())
             .exceptionHandling(handling -> handling

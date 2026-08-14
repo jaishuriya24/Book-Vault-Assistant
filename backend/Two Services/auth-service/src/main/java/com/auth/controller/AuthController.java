@@ -1,9 +1,11 @@
 package com.auth.controller;
 
 import com.auth.dto.*;
+import com.auth.entity.AdminUser;
 import com.auth.entity.AppUser;
 import com.auth.entity.LoginHistory;
 import com.auth.entity.Role;
+import com.auth.repository.AdminUserRepository;
 import com.auth.repository.AppUserRepository;
 import com.auth.repository.LoginHistoryRepository;
 import com.auth.security.JwtUtil;
@@ -25,6 +27,7 @@ import java.util.List;
 public class AuthController {
 
     private final AppUserRepository appUserRepository;
+    private final AdminUserRepository adminUserRepository;
     private final LoginHistoryRepository loginHistoryRepository;
     private final PasswordEncoder passwordEncoder;
     private final AuthenticationManager authenticationManager;
@@ -32,11 +35,13 @@ public class AuthController {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public AuthController(AppUserRepository appUserRepository,
+                          AdminUserRepository adminUserRepository,
                           LoginHistoryRepository loginHistoryRepository,
                           PasswordEncoder passwordEncoder,
                           AuthenticationManager authenticationManager,
                           JwtUtil jwtUtil) {
         this.appUserRepository = appUserRepository;
+        this.adminUserRepository = adminUserRepository;
         this.loginHistoryRepository = loginHistoryRepository;
         this.passwordEncoder = passwordEncoder;
         this.authenticationManager = authenticationManager;
@@ -46,6 +51,9 @@ public class AuthController {
     /**
      * Creates a new user in MySQL.
      */
+    /**
+     * Creates a new user in MySQL and saves optional face biometric descriptor.
+     */
     @PostMapping("/register")
     public ResponseEntity<?> register(@Valid @RequestBody RegisterRequest request) {
         if (appUserRepository.existsByEmail(request.getEmail())) {
@@ -53,7 +61,7 @@ public class AuthController {
         }
 
         String requestedRole = request.getRole() == null || request.getRole().isBlank()
-                ? Role.EMPLOYEE.name()
+                ? Role.READER.name()
                 : request.getRole().trim().toUpperCase();
 
         boolean validRole = Arrays.stream(Role.values())
@@ -68,9 +76,31 @@ public class AuthController {
         user.setEmail(request.getEmail());
         user.setPassword(passwordEncoder.encode(request.getPassword()));
         user.setRole(requestedRole);
-        appUserRepository.save(user);
 
-        return ResponseEntity.ok("User registered successfully");
+        // Save facial biometric descriptor as standardized multi-sample array if captured during sign up
+        if (request.getFaceDescriptor() != null) {
+            try {
+                List<List<Double>> samples = parseDescriptorSamples(objectMapper.writeValueAsString(request.getFaceDescriptor()));
+                user.setFaceDescriptor(objectMapper.writeValueAsString(samples));
+            } catch (Exception e) {
+                System.err.println("Failed to serialize faceDescriptor on register: " + e.getMessage());
+            }
+        }
+
+        appUserRepository.save(user);
+        String token = jwtUtil.generateToken(user.getEmail(), user.getId(), user.getRole());
+
+        // Return structured JSON response with token & details
+        java.util.Map<String, Object> resp = new java.util.HashMap<>();
+        resp.put("success", true);
+        resp.put("message", "User registered successfully");
+        resp.put("id", user.getId());
+        resp.put("name", user.getName());
+        resp.put("email", user.getEmail());
+        resp.put("role", user.getRole());
+        resp.put("token", token);
+
+        return ResponseEntity.ok(resp);
     }
 
     /**
@@ -98,54 +128,102 @@ public class AuthController {
     }
 
     /**
+     * Dedicated Admin login endpoint querying admin_users table strictly.
+     */
+    @PostMapping("/admin/login")
+    public ResponseEntity<?> adminLogin(@Valid @RequestBody AdminLoginRequest request) {
+        String identifier = request.getUsernameOrEmail().trim();
+        AdminUser admin = adminUserRepository.findByUsernameOrEmail(identifier, identifier).orElse(null);
+
+        if (admin != null) {
+            boolean matches = passwordEncoder.matches(request.getPassword(), admin.getPassword())
+                    || request.getPassword().equals(admin.getPassword());
+
+            if (matches) {
+                loginHistoryRepository.save(new LoginHistory(
+                        admin.getId(), admin.getEmail(), admin.getUsername(), "ADMIN_PASSWORD", "SUCCESS", 0.0, "Admin authenticated"));
+                String token = jwtUtil.generateToken(admin.getEmail(), admin.getId(), "ADMIN");
+                return ResponseEntity.ok(new AuthResponse(token, admin.getId(), admin.getEmail(), admin.getUsername(), "ADMIN"));
+            }
+        }
+
+        loginHistoryRepository.save(new LoginHistory(
+                null, identifier, "UNKNOWN", "ADMIN_PASSWORD", "FAILED", null, "Invalid admin credentials"));
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("Invalid admin credentials");
+    }
+
+    /**
      * Associates or registers a new face biometric descriptor with a user in MySQL.
-     * If the user is new, automatically creates the user record in MySQL.
+     * 🛡️ STRICT SECURITY GATE:
+     * - Unauthenticated requests ALWAYS create a new, isolated AppUser row (never merges across unauthenticated users).
+     * - Merging/updating existing account face descriptors requires a valid Bearer JWT Authorization header.
      */
     @PostMapping("/face-register")
-    public ResponseEntity<?> registerFace(@RequestBody FaceRegisterRequest request) {
-        // Name is mandatory — this is what shows in the APP_USERS table
+    public ResponseEntity<?> registerFace(@RequestHeader(value = "Authorization", required = false) String authHeader,
+                                          @RequestBody FaceRegisterRequest request) {
         String displayName = (request.getName() != null && !request.getName().isBlank())
                 ? request.getName().trim()
-                : null;
+                : "Reader";
 
-        if (displayName == null || request.getFaceDescriptor() == null || request.getFaceDescriptor().isEmpty()) {
-            return ResponseEntity.badRequest().body("Name and non-empty face descriptor are required");
+        if (request.getFaceDescriptor() == null || request.getFaceDescriptor().isEmpty()) {
+            return ResponseEntity.badRequest().body("Non-empty face descriptor vector is required.");
         }
 
-        // Generate a hidden internal system email from the display name
-        // e.g. "Enrolled Reader" → "enrolledreader@readease.vault"
-        String systemEmail = displayName.toLowerCase().replaceAll("\\s+", "") + "@readease.vault";
-        // Prefer an explicit real email if it was provided (and isn't just the name repeated)
-        if (request.getEmail() != null && request.getEmail().contains("@") && !request.getEmail().equalsIgnoreCase(displayName)) {
-            systemEmail = request.getEmail().trim();
+        AppUser user = null;
+
+        // 🔒 SECURITY GATE: Verify if caller holds a valid JWT token for an existing session
+        if (authHeader != null && authHeader.startsWith("Bearer ")) {
+            String token = authHeader.substring(7);
+            try {
+                String tokenEmail = jwtUtil.extractUsername(token);
+                if (tokenEmail != null && !tokenEmail.isBlank()) {
+                    user = appUserRepository.findByEmail(tokenEmail).orElse(null);
+                }
+            } catch (Exception e) {
+                // Invalid token — treat as unauthenticated
+            }
         }
 
-        AppUser user = appUserRepository.findByEmail(systemEmail).orElse(null);
-
-        // If new user, create record in MySQL with READER role
+        // 🛡️ UNAUTHENTICATED BRANCH: Always isolate into a fresh AppUser row!
         if (user == null) {
+            String uniqueSystemEmail = displayName.toLowerCase().replaceAll("\\s+", "") 
+                    + "_" + java.util.UUID.randomUUID().toString().substring(0, 8) + "@readease.vault";
+            
             user = new AppUser();
-            user.setEmail(systemEmail); // internal only, never shown to user
+            user.setEmail(uniqueSystemEmail);
+            user.setName(displayName);
             user.setPassword("face_biometric_auth");
             user.setRole(Role.READER.name());
-        }
-        // Always update the display NAME (shown in table)
-        user.setName(displayName);
-        // Keep ADMIN role if already set; upgrade USER/EMPLOYEE → READER
-        if (user.getRole() == null || user.getRole().equals("USER") || user.getRole().equals("EMPLOYEE")) {
-            user.setRole(Role.READER.name());
+        } else {
+            // AUTHENTICATED RE-ENROLLMENT BRANCH: Update display name for authenticated user
+            user.setName(displayName);
         }
 
         try {
-            String descriptorJson = objectMapper.writeValueAsString(request.getFaceDescriptor());
+            // Merge face samples into multi-sample vector array
+            List<List<Double>> existingSamples = parseDescriptorSamples(user.getFaceDescriptor());
+            List<List<Double>> newSamples = parseDescriptorSamples(objectMapper.writeValueAsString(request.getFaceDescriptor()));
+
+            List<List<Double>> merged = new java.util.ArrayList<>(existingSamples);
+            for (List<Double> s : newSamples) {
+                if (s != null && s.size() == 128) {
+                    merged.add(s);
+                }
+            }
+            // Keep up to 10 latest high-quality sample vectors
+            if (merged.size() > 10) {
+                merged = merged.subList(merged.size() - 10, merged.size());
+            }
+
+            String descriptorJson = objectMapper.writeValueAsString(merged);
             user.setFaceDescriptor(descriptorJson);
             appUserRepository.save(user);
 
-            // Return NAME and ROLE only — email is internal, never exposed
+            String token = jwtUtil.generateToken(user.getEmail(), user.getId(), user.getRole());
             return ResponseEntity.ok(new AuthResponse(
-                    null,
+                    token,
                     user.getId(),
-                    null,
+                    user.getEmail(),
                     user.getName(),
                     user.getRole()));
         } catch (Exception e) {
@@ -167,8 +245,8 @@ public class AuthController {
         List<AppUser> allUsers = appUserRepository.findAll();
         AppUser bestMatchUser = null;
         double minDistance = Double.MAX_VALUE;
-        // Calibrated Cosine Distance threshold for 128-D normalized vectors (<= 0.22 is same person)
-        double MATCH_THRESHOLD = 0.22;
+        // Calibrated Euclidean Distance threshold for 128-D ResNet descriptors
+        double MATCH_THRESHOLD = 0.45;
 
         for (AppUser user : allUsers) {
             if (user.getFaceDescriptor() == null || user.getFaceDescriptor().isBlank()) {
@@ -176,20 +254,23 @@ public class AuthController {
             }
 
             try {
-                List<Double> storedVector = objectMapper.readValue(
-                        user.getFaceDescriptor(), new TypeReference<List<Double>>() {});
+                // Support both single 128-D vector [128] and multi-sample array [[128], [128], ...]
+                List<List<Double>> samples = parseDescriptorSamples(user.getFaceDescriptor());
+                for (List<Double> storedVector : samples) {
+                    if (storedVector == null || storedVector.size() != 128) continue; // Purge non-128 legacy vectors
 
-                double dist = calculateCosineDistance(request.getFaceDescriptor(), storedVector);
-                if (dist < minDistance) {
-                    minDistance = dist;
-                    bestMatchUser = user;
+                    double dist = calculateEuclideanDistance(request.getFaceDescriptor(), storedVector);
+                    if (dist < minDistance) {
+                        minDistance = dist;
+                        bestMatchUser = user;
+                    }
                 }
             } catch (Exception ignored) {
             }
         }
 
         if (bestMatchUser != null && minDistance <= MATCH_THRESHOLD) {
-            // Save successful face login in MySQL with user NAME and ROLE
+            // Save successful face login in MySQL with user NAME and READER role
             loginHistoryRepository.save(new LoginHistory(
                     bestMatchUser.getId(),
                     bestMatchUser.getEmail(),
@@ -199,13 +280,14 @@ public class AuthController {
                     minDistance,
                     "Face match distance: " + String.format("%.4f", minDistance)));
 
-            String token = jwtUtil.generateToken(bestMatchUser.getEmail(), bestMatchUser.getId(), bestMatchUser.getRole());
+            // Strictly issue token as READER for biometric logins
+            String token = jwtUtil.generateToken(bestMatchUser.getEmail(), bestMatchUser.getId(), "READER");
             return ResponseEntity.ok(new AuthResponse(
                     token,
                     bestMatchUser.getId(),
                     bestMatchUser.getEmail(),
                     bestMatchUser.getName(),
-                    bestMatchUser.getRole()));
+                    "READER"));
         } else {
             // Save failed login attempt in MySQL
             loginHistoryRepository.save(new LoginHistory(
@@ -231,26 +313,39 @@ public class AuthController {
     }
 
     /**
-     * Calculates Cosine Distance between two 128-dimensional feature vectors.
-     * Returns a distance value between 0.0 (identical) and 1.0 (different).
+     * Helper to parse face descriptors stored as either [128] single vector or [[128], [128]] multi-sample array.
      */
-    private double calculateCosineDistance(List<Double> v1, List<Double> v2) {
+    private List<List<Double>> parseDescriptorSamples(String rawJson) {
+        List<List<Double>> samples = new java.util.ArrayList<>();
+        if (rawJson == null || rawJson.isBlank()) return samples;
+
+        try {
+            if (rawJson.trim().startsWith("[[")) {
+                samples = objectMapper.readValue(rawJson, new TypeReference<List<List<Double>>>() {});
+            } else {
+                List<Double> single = objectMapper.readValue(rawJson, new TypeReference<List<Double>>() {});
+                if (single != null) samples.add(single);
+            }
+        } catch (Exception e) {
+        }
+        return samples;
+    }
+
+    /**
+     * Calculates true Euclidean Distance between two 128-dimensional feature vectors: sqrt(sum((a_i - b_i)^2))
+     * Returns a distance value between 0.0 (identical) and ~1.5 (different).
+     */
+    private double calculateEuclideanDistance(List<Double> v1, List<Double> v2) {
         if (v1 == null || v2 == null) return Double.MAX_VALUE;
         int len = Math.min(v1.size(), v2.size());
         if (len == 0) return Double.MAX_VALUE;
-        double dot = 0.0;
-        double mag1 = 0.0;
-        double mag2 = 0.0;
+        double sum = 0.0;
         for (int i = 0; i < len; i++) {
             double a = v1.get(i) != null ? v1.get(i) : 0.0;
             double b = v2.get(i) != null ? v2.get(i) : 0.0;
-            dot += a * b;
-            mag1 += a * a;
-            mag2 += b * b;
+            double diff = a - b;
+            sum += diff * diff;
         }
-        double denom = Math.sqrt(mag1) * Math.sqrt(mag2);
-        if (denom == 0.0) return Double.MAX_VALUE;
-        double sim = dot / denom;
-        return Math.max(0.0, 1.0 - sim);
+        return Math.sqrt(sum);
     }
 }

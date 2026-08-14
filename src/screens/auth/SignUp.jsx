@@ -14,7 +14,8 @@ import notify from "../../services/notificationService";
 
 import {
   extractRobustFaceDescriptor,
-  detectFacePresence
+  detectFacePresence,
+  verifyLivenessAndExtractMultiDescriptors
 } from "../../utils/faceBiometrics";
 
 export default function SignUp() {
@@ -57,22 +58,29 @@ export default function SignUp() {
     } catch (e) {}
   }, []);
 
-  // Voice fill listener
+  // Voice fill & submit listener
   useEffect(() => {
     const handleVoiceFill = (e) => {
       const { field, value } = e.detail;
-      if (field === "name") {
+      if (field === "name" || field === "fullName") {
         setName(value);
         setUsername(value.toLowerCase().replace(/\s+/g, ""));
       } else if (field === "email") {
         setEmail(value);
       } else if (field === "password") {
         setPassword(value);
+      } else if (field === "username") {
+        setUsername(value);
       }
     };
+    const handleVoiceSubmit = () => {
+      handleRegister();
+    };
     window.addEventListener("book-vault:voice-fill-field", handleVoiceFill);
+    window.addEventListener("book-vault:voice-submit-signup", handleVoiceSubmit);
     return () => {
       window.removeEventListener("book-vault:voice-fill-field", handleVoiceFill);
+      window.removeEventListener("book-vault:voice-submit-signup", handleVoiceSubmit);
     };
   }, []);
 
@@ -136,11 +144,27 @@ export default function SignUp() {
     playTone(650, 0.2);
 
     let descriptor = null;
-    if (isCameraActive && webcamRef.current) {
+    if (isCameraActive && webcamRef.current && webcamRef.current.video) {
       try {
-        const screenshot = webcamRef.current.getScreenshot();
-        if (screenshot) {
-          descriptor = await extractRobustFaceDescriptor(screenshot, canvasRef.current);
+        setCameraStatus("👁️ Verifying live presence... Please blink or turn your head slightly.");
+        notify.info("Live Verification: Please blink or turn your head slightly.");
+
+        const livenessResult = await verifyLivenessAndExtractMultiDescriptors(
+          webcamRef.current.video,
+          { maxDurationMs: 6000 },
+          (statusMsg) => setCameraStatus(statusMsg)
+        );
+
+        if (livenessResult.isLive && livenessResult.multiDescriptors) {
+          descriptor = livenessResult.multiDescriptors; // Multi-sample array [[128], [128], [128]]
+          setCameraStatus("✅ Live presence verified! Registering account...");
+        } else {
+          setCameraStatus("⚠️ Live motion not confirmed. Using baseline face snapshot...");
+          const screenshot = webcamRef.current.getScreenshot();
+          if (screenshot) {
+            const singleDesc = await extractRobustFaceDescriptor(screenshot);
+            if (singleDesc) descriptor = [singleDesc];
+          }
         }
       } catch (err) {
         console.warn("Face capture note:", err);

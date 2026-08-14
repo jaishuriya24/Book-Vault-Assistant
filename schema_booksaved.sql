@@ -1,9 +1,3 @@
--- ========================================================
--- Database Schema for Book-Vault-main
--- Table Name: booksaved
--- Database: bookvault
--- ========================================================
-
 CREATE DATABASE IF NOT EXISTS bookvault;
 USE bookvault;
 
@@ -25,3 +19,4 @@ CREATE TABLE IF NOT EXISTS booksaved (
   INDEX idx_user (user_id),
   INDEX idx_title (title)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+

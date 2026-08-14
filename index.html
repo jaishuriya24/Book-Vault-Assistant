@@ -11,7 +11,20 @@
     <meta property="og:type" content="website" />
     <meta property="og:image" content="/Logo-book.png" />
     <title>Book Vault — Your Personal Reading Companion</title>
-    <!-- Load TensorFlow.js and COCO-SSD from CDN to bypass Vite bundling issues -->
+    <!-- Suppress repetitive TFJS kernel registration & Three.js Clock deprecation warnings -->
+    <script>
+      (function() {
+        const origWarn = console.warn;
+        console.warn = function(...args) {
+          if (typeof args[0] === 'string') {
+            if (args[0].includes('is already registered') || args[0].includes('THREE.Clock: This module has been deprecated')) {
+              return;
+            }
+          }
+          origWarn.apply(console, args);
+        };
+      })();
+    </script>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
     <!-- Load OpenCV.js for page corner detection and perspective warping -->

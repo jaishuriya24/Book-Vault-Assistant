@@ -19,6 +19,8 @@ export default function FaceLogin() {
   const webcamRef = useRef(null);
   const canvasRef = useRef(null);
   const audioContextRef = useRef(null);
+  const nameInputRef = useRef(null);
+  const recognitionRef = useRef(null);
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
@@ -36,6 +38,109 @@ export default function FaceLogin() {
   const [showRegisterInput, setShowRegisterInput] = useState(initialMode === "register");
   const [isAskingName, setIsAskingName] = useState(initialMode === "register");
   const [hasFaceInFrame, setHasFaceInFrame] = useState(false);
+  const [isListeningName, setIsListeningName] = useState(false);
+
+  // Text-To-Speech announcement and speech synthesis reader
+  const speak = useCallback((text, onEndCallback) => {
+    if ('speechSynthesis' in window && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+      const utter = new SpeechSynthesisUtterance(text);
+      utter.lang = "en-US";
+      utter.rate = 0.95;
+      if (onEndCallback) {
+        utter.onend = () => onEndCallback();
+        utter.onerror = () => onEndCallback();
+      }
+      window.speechSynthesis.speak(utter);
+    } else if (onEndCallback) {
+      onEndCallback();
+    }
+  }, []);
+
+  // Dedicated speech listener for hands-free name entry
+  const startListeningForName = useCallback(() => {
+    const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRec) {
+      setStatusMessage("🎙️ Speech recognition not supported in browser. Please type your name.");
+      return;
+    }
+
+    try {
+      if (recognitionRef.current) {
+        try { recognitionRef.current.stop(); } catch (_) {}
+      }
+
+      const recognition = new SpeechRec();
+      recognitionRef.current = recognition;
+      recognition.lang = "en-US";
+      recognition.interimResults = false;
+      recognition.maxAlternatives = 1;
+
+      setIsListeningName(true);
+      setStatusMessage("🎙️ Listening... Please say your name now!");
+
+      recognition.onresult = (event) => {
+        setIsListeningName(false);
+        const rawTranscript = event.results[0][0].transcript.trim();
+        if (rawTranscript) {
+          const cleanName = rawTranscript.replace(/^(my name is|name is|i am|it's|it is|this is|called)\s+/i, '').trim();
+          const finalName = cleanName || rawTranscript;
+          
+          setRegEmail(finalName);
+          
+          setTimeout(() => {
+            if (nameInputRef.current) {
+              nameInputRef.current.focus();
+              nameInputRef.current.select();
+            }
+          }, 100);
+
+          setStatusMessage(`🎙️ Heard name: "${finalName}". Click Enroll & Login or press Enter.`);
+          speak(`Your name is ${finalName}. Click enroll to complete.`);
+        }
+      };
+
+      recognition.onerror = (e) => {
+        console.warn("FaceLogin name speech error:", e.error);
+        setIsListeningName(false);
+        if (e.error !== 'no-speech' && e.error !== 'aborted') {
+          setStatusMessage("🎙️ Could not hear clearly. Click mic or type your name.");
+        }
+      };
+
+      recognition.onend = () => {
+        setIsListeningName(false);
+      };
+
+      recognition.start();
+    } catch (err) {
+      console.warn("Error starting speech recognition:", err);
+      setIsListeningName(false);
+    }
+  }, [speak]);
+
+  // Focus input box & auto-listen whenever name enrollment box opens
+  useEffect(() => {
+    if (showRegisterInput || isAskingName) {
+      setTimeout(() => {
+        if (nameInputRef.current) {
+          nameInputRef.current.focus();
+        }
+      }, 150);
+    }
+  }, [showRegisterInput, isAskingName]);
+
+  // Clean up Speech & Voice on unmount
+  useEffect(() => {
+    return () => {
+      if (recognitionRef.current) {
+        try { recognitionRef.current.stop(); } catch (_) {}
+      }
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, []);
   
   const pendingDescriptorRef = useRef(null);
   const regEmailRef = useRef("");
@@ -50,11 +155,17 @@ export default function FaceLogin() {
       "http://localhost:8081",
     ].filter((v, i, a) => v && a.indexOf(v) === i);
 
+    const token = localStorage.getItem("token");
+    const headers = {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {})
+    };
+
     for (const base of urls) {
       try {
         const res = await fetch(`${base}${path}`, {
           method,
-          headers: { "Content-Type": "application/json" },
+          headers,
           ...(body ? { body: JSON.stringify(body) } : {})
         });
         if (res.ok || res.status === 401 || res.status === 400) {
@@ -86,35 +197,37 @@ export default function FaceLogin() {
     } catch (e) {}
   }, []);
 
+  // Crisp Audio BEEP sound signal indicating voice recording start
+  const playBeepSound = useCallback(() => {
+    try {
+      if (!audioContextRef.current) {
+        audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      const ctx = audioContextRef.current;
+      if (ctx.state === "suspended") ctx.resume();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(880, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(1200, ctx.currentTime + 0.15);
+      gain.gain.setValueAtTime(0.25, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.25);
+    } catch (e) {}
+  }, []);
+
   useEffect(() => {
     regEmailRef.current = regEmail;
   }, [regEmail]);
 
-  // Sync registered face profiles from MySQL on mount
+  // Query reader list on mount if needed
   useEffect(() => {
     callAuthApi("/api/users/readers")
       .then((res) => (res && res.ok ? res.json() : null))
-      .then((users) => {
-        if (Array.isArray(users) && users.length > 0) {
-          const profiles = [];
-          users.forEach((u) => {
-            if (u.faceDescriptor) {
-              try {
-                profiles.push({
-                  name: u.userName || u.name,
-                  email: u.email,
-                  faceDescriptor: typeof u.faceDescriptor === "string" ? JSON.parse(u.faceDescriptor) : u.faceDescriptor,
-                  createdAt: u.createdAt,
-                });
-              } catch (_) {}
-            }
-          });
-          if (profiles.length > 0) {
-            localStorage.setItem("face_profiles", JSON.stringify(profiles));
-          }
-        }
-      })
-      .catch((err) => console.log("MySQL users sync note:", err.message));
+      .catch((err) => console.log("MySQL readers sync note:", err.message));
   }, [callAuthApi]);
 
   // Saves registered face with name and logs in
@@ -269,8 +382,24 @@ export default function FaceLogin() {
         setIsVerifying(false);
         setIsAskingName(true);
         setShowRegisterInput(true);
-        setStatusMessage("New face detected! Enter your name below to enroll & log in.");
-        playTone(440, 0.2);
+        setStatusMessage("👤 Face detected! Focusing input & instructing voice...");
+
+        // 1. Focus input box immediately
+        setTimeout(() => {
+          if (nameInputRef.current) {
+            nameInputRef.current.focus();
+          }
+        }, 100);
+
+        // 2. Instruct user to speak after beep -> Play Beep -> Listen -> Read back
+        speak("New face detected! What is your name? Please say your name after the beep.", () => {
+          playBeepSound();
+          setStatusMessage("🔊 BEEP! 🎙️ Listening... Say your name now!");
+          setTimeout(() => {
+            startListeningForName();
+          }, 250);
+        });
+
         isScanningRef.current = false;
       }
     } catch (err) {
@@ -278,7 +407,7 @@ export default function FaceLogin() {
       setStatusMessage("Camera active. Looking for your face...");
       isScanningRef.current = false;
     }
-  }, [isAskingName, callAuthApi, navigate, playTone]);
+  }, [isAskingName, callAuthApi, navigate, playBeepSound, startListeningForName, speak]);
 
   // Auto-scan timer: runs automatically every 1.2s when camera is ready
   useEffect(() => {
@@ -450,8 +579,8 @@ export default function FaceLogin() {
                   <div className="w-full flex flex-col gap-2 p-3.5 bg-neutral-900/95 border border-orange-500/40 rounded-2xl animate-fade-in text-left shadow-xl">
                     <div className="flex items-center justify-between text-[11px] text-orange-400 font-semibold">
                       <div className="flex items-center gap-1.5">
-                        <span className="animate-pulse">👤</span>
-                        <span>Enter your name to enroll this face:</span>
+                        <span className="animate-pulse">{isListeningName ? "🎙️" : "👤"}</span>
+                        <span>{isListeningName ? "Listening for your name..." : "Enter your name to enroll this face:"}</span>
                       </div>
                       <button
                         type="button"
@@ -460,6 +589,9 @@ export default function FaceLogin() {
                           setShowRegisterInput(false);
                           setIsAskingName(false);
                           setRegEmail("");
+                          if (recognitionRef.current) {
+                            try { recognitionRef.current.stop(); } catch (_) {}
+                          }
                           setStatusMessage("Camera active. Looking for your face...");
                         }}
                         className="text-neutral-400 hover:text-white text-[10px] underline cursor-pointer"
@@ -467,23 +599,49 @@ export default function FaceLogin() {
                         Rescan Face
                       </button>
                     </div>
-                    <div className="flex gap-2">
-                      <input
-                        type="text"
-                        placeholder="Enter your name (e.g. Alex, Jai)"
-                        value={regEmail}
-                        onChange={(e) => setRegEmail(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") handleRegisterWithName(regEmail);
-                        }}
-                        className="flex-1 px-3 py-2 bg-black border border-neutral-700 rounded-xl text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-orange-500"
-                        autoFocus
-                      />
+                    <div className="flex gap-2 items-center">
+                      <div className="relative flex-1">
+                        <input
+                          ref={nameInputRef}
+                          type="text"
+                          placeholder="Enter your name (e.g. Alex, Jai)"
+                          value={regEmail}
+                          onChange={(e) => setRegEmail(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") handleRegisterWithName(regEmail);
+                          }}
+                          className="w-full px-3 py-2 pr-9 bg-black border border-neutral-700 rounded-xl text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-orange-500 focus:ring-1 focus:ring-orange-500/50"
+                          autoFocus
+                        />
+                        <button
+                          type="button"
+                          onClick={startListeningForName}
+                          title="Click to speak your name"
+                          className={`absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-lg transition-all ${
+                            isListeningName 
+                              ? "text-red-400 animate-bounce scale-110" 
+                              : "text-neutral-400 hover:text-orange-400"
+                          }`}
+                        >
+                          {isListeningName ? "🎙️" : "🎤"}
+                        </button>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={startListeningForName}
+                        className={`px-3 py-2 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+                          isListeningName 
+                            ? "bg-red-500/20 border-red-500 text-red-400 animate-pulse border-red-500/50" 
+                            : "bg-neutral-800 border-neutral-700 text-neutral-300 hover:text-white"
+                        }`}
+                      >
+                        <span>{isListeningName ? "🔴 Listening..." : "🎤 Speak"}</span>
+                      </button>
                       <button
                         type="button"
                         onClick={() => handleRegisterWithName(regEmail)}
                         disabled={isVerifying}
-                        className="px-4 py-2 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white font-bold text-xs rounded-xl shadow cursor-pointer transition-all whitespace-nowrap"
+                        className="px-4 py-2 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white font-bold text-xs rounded-xl shadow cursor-pointer transition-all whitespace-nowrap active:scale-95"
                       >
                         {isVerifying ? "Saving..." : "Enroll & Login"}
                       </button>

@@ -16,14 +16,20 @@ import Sidebar from "../components/ui/Sidebar";
 import ProfileScreen from "../components/home/ProfileScreen";
 import AdminDashboard from "../components/home/AdminDashboard";
 import BookScanner from "../screens/scanner/BookScanner";
-import VoiceBookScanner from "../components/BookScanner";
+import VoiceBookScanner from "../components/ui/VoiceBookScanner";
 import InteractiveBook from "../components/ui/InteractiveBook";
 import Ferrofluid from "../components/ui/Ferrofluid";
 import Shuffle from "../components/ui/Shuffle";
 import ToastNotification from "../components/ui/ToastNotification";
 import ConfirmModal from "../components/ui/ConfirmModal";
+import SettingsScreen from "../screens/settings/SettingsScreen";
 import notify from "../services/notificationService";
 import { extractText } from "../services/ocrService";
+import mysqlService from "../services/mysqlService";
+import MySQLDatabasePage from "../screens/database/MySQLDatabasePage";
+import { parseVoiceCommand } from "../services/voiceCommandService";
+import { startMoonshineListening, stopMoonshineListening } from "../services/moonshineVoiceService";
+import { Sparkles, Trash2, RotateCcw, Plus, Layers, FileText, Image as ImageIcon, Volume2, CheckCircle2, AlertCircle, Loader2, Database, Mic, MicOff } from "lucide-react";
 /* ── SVG Icon Components ── */
 const IconBook = () => (
   <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -78,6 +84,8 @@ export default function App() {
   const [extractedText, setExtractedText] = useState("");
   const [wizardStep, setWizardStep] = useState(1); // 1: method, 2: content, 3: review
   const [capturedPages, setCapturedPages] = useState([]);
+  const [selectedPageIdx, setSelectedPageIdx] = useState(0);
+  const [uploadSubTab, setUploadSubTab] = useState("images"); // "images" or "doc"
   const [autoSaveTimeLeft, setAutoSaveTimeLeft] = useState(25);
   const handleUploadSubmitRef = useRef(null);
   const lastPageCountRef = useRef(0);
@@ -85,10 +93,28 @@ export default function App() {
   const [isDragging, setIsDragging] = useState(false);
 
   const [activeUser, setActiveUser] = useState(() => localStorage.getItem("username") || "Guest");
+  const [availableAccounts, setAvailableAccounts] = useState(() => {
+    try {
+      const faceProfiles = JSON.parse(localStorage.getItem("face_profiles") || "[]");
+      const names = faceProfiles.map(p => p.name).filter(Boolean);
+      const cur = localStorage.getItem("username") || "Guest";
+      return Array.from(new Set(["Guest", "Reader", "Admin", cur, ...names]));
+    } catch (_) {
+      return ["Guest", "Reader", "Admin"];
+    }
+  });
+  const [uploadUser, setUploadUser] = useState(() => localStorage.getItem("username") || "Guest");
+  const [customAccountName, setCustomAccountName] = useState("");
+  const [showAddAccountInput, setShowAddAccountInput] = useState(false);
+
   const STORAGE_KEY = `uploadedBooks_${activeUser}`;
 
   useEffect(() => {
-    const refresh = () => setActiveUser(localStorage.getItem("username") || "Guest");
+    const refresh = () => {
+      const u = localStorage.getItem("username") || "Guest";
+      setActiveUser(u);
+      setUploadUser(u);
+    };
     refresh();
     window.addEventListener("storage", refresh);
     window.addEventListener("bookvault:username-updated", refresh);
@@ -98,7 +124,20 @@ export default function App() {
     };
   }, [location.pathname]);
 
-  // Re-read books when route changes to keep it fresh
+  useEffect(() => {
+    const authUrl = import.meta.env.VITE_SPRING_BOOT_AUTH_URL || "http://localhost:8081";
+    fetch(`${authUrl}/api/users/readers`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (Array.isArray(data)) {
+          const names = data.map((u) => u.userName || u.name).filter(Boolean);
+          setAvailableAccounts((prev) => Array.from(new Set([...prev, ...names])));
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  // Re-read books from MySQL & local storage when user or route changes
   const [books, setBooks] = useState([]);
   const [activeInteractiveBook, setActiveInteractiveBook] = useState(null);
 
@@ -113,59 +152,440 @@ export default function App() {
   const [activeDropdown, setActiveDropdown] = useState(null);
   const [editingCoverId, setEditingCoverId] = useState(null);
 
+  // ── Global Ollama Voice Assistant & Command Dispatcher ──
+  const [isVoiceListening, setIsVoiceListening] = useState(true);
+  const [voiceTranscript, setVoiceTranscript] = useState("");
+  const globalRecRef = useRef(null);
+
+  const [doraFrame, setDoraFrame] = useState(1);
   useEffect(() => {
+    const interval = setInterval(() => {
+      setDoraFrame((prev) => (prev % 3) + 1);
+    }, 450);
+    return () => clearInterval(interval);
+  }, []);
+
+  const [pendingField, setPendingField] = useState("");
+  const [aiResponseText, setAiResponseText] = useState("");
+  const [isSpeakingTts, setIsSpeakingTts] = useState(false);
+
+  // Developer AI Log Console State & Drag Position
+  const [showDevConsole, setShowDevConsole] = useState(true);
+  const [devConsolePos, setDevConsolePos] = useState({ x: 20, y: Math.max(80, window.innerHeight - 340) });
+  const [devInputText, setDevInputText] = useState("");
+  const isDraggingRef = useRef(false);
+  const dragOffsetRef = useRef({ x: 0, y: 0 });
+
+  const [chatHistory, setChatHistory] = useState([
+    { sender: "system", text: "🤖 Doraemon AI Assistant Active (Ollama qwen3.5:0.8b)", time: new Date().toLocaleTimeString() }
+  ]);
+
+  const handleStartDrag = (e) => {
+    isDraggingRef.current = true;
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+    dragOffsetRef.current = {
+      x: clientX - devConsolePos.x,
+      y: clientY - devConsolePos.y
+    };
+
+    const handleMove = (moveEvt) => {
+      if (!isDraggingRef.current) return;
+      const curX = moveEvt.touches ? moveEvt.touches[0].clientX : moveEvt.clientX;
+      const curY = moveEvt.touches ? moveEvt.touches[0].clientY : moveEvt.clientY;
+      const newX = Math.max(10, Math.min(window.innerWidth - 360, curX - dragOffsetRef.current.x));
+      const newY = Math.max(10, Math.min(window.innerHeight - 50, curY - dragOffsetRef.current.y));
+      setDevConsolePos({ x: newX, y: newY });
+    };
+
+    const handleEnd = () => {
+      isDraggingRef.current = false;
+      window.removeEventListener("mousemove", handleMove);
+      window.removeEventListener("mouseup", handleEnd);
+      window.removeEventListener("touchmove", handleMove);
+      window.removeEventListener("touchend", handleEnd);
+    };
+
+    window.addEventListener("mousemove", handleMove);
+    window.addEventListener("mouseup", handleEnd);
+    window.addEventListener("touchmove", handleMove);
+    window.addEventListener("touchend", handleEnd);
+  };
+
+  const speakWithEchoGuard = useCallback((text, speed = 1.0) => {
+    if (!text || !('speechSynthesis' in window && window.speechSynthesis)) return;
     try {
-      const cleanCoverUrl = (img) => (img && typeof img === 'string') ? img : '';
-
-      const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
-      const cleanedStored = stored.map((b) => {
-        const textContent = b.content || b.extracted_text || b.text || b.fullText || "No text extracted";
-        const pageItems = (b.pages && Array.isArray(b.pages) && b.pages.length > 0)
-          ? b.pages.map(p => typeof p === 'string' ? p : (p.extractedText || p.text || textContent))
-          : [textContent];
-        return {
-          ...b,
-          cover: cleanCoverUrl(b.cover),
-          content: textContent,
-          pages: pageItems,
-          pageCount: b.pageCount || pageItems.length
-        };
-      });
-      setBooks(cleanedStored);
-
-      // Connect React to Java Spring Boot & MySQL Database API
-      const springApiUrl = import.meta.env.VITE_SPRING_BOOT_API_URL || import.meta.env.VITE_SERVER_URL || "http://localhost:8082";
-      fetch(`${springApiUrl}/api/books`)
-        .then((res) => res.json())
-        .then((data) => {
-          const list = Array.isArray(data) ? data : (data && data.books) || [];
-          if (list && list.length > 0) {
-            const apiBooks = list.map((b) => {
-              const textContent = b.content || b.extracted_text || b.text || b.fullText || "No text extracted";
-              const pageItems = (b.pages && Array.isArray(b.pages) && b.pages.length > 0)
-                ? b.pages.map(p => typeof p === 'string' ? p : (p.extractedText || p.text || textContent))
-                : [textContent];
-              return {
-                id: String(b.id || b._id || b.timestamp || Date.now()),
-                title: b.title || "Scanned Book",
-                author: b.author || "Unknown",
-                cover: cleanCoverUrl(b.coverImage || b.cover || b.image_base64 || ""),
-                content: textContent,
-                pages: pageItems,
-                pageCount: b.pageCount || b.page_count || pageItems.length,
-              };
-            });
-            setBooks(apiBooks);
-            try {
-              localStorage.setItem(STORAGE_KEY, JSON.stringify(apiBooks));
-            } catch (_) {}
-          }
-        })
-        .catch((err) => console.log("Backend DB offline or starting...", err));
+      window.speechSynthesis.cancel();
+      setIsSpeakingTts(true);
+      const utter = new SpeechSynthesisUtterance(text);
+      utter.lang = 'en-US';
+      utter.rate = speed || 1.0;
+      utter.onend = () => {
+        setTimeout(() => setIsSpeakingTts(false), 350);
+      };
+      utter.onerror = () => {
+        setIsSpeakingTts(false);
+      };
+      window.speechSynthesis.speak(utter);
     } catch (e) {
-      setBooks([]);
+      setIsSpeakingTts(false);
     }
-  }, [path, STORAGE_KEY]);
+  }, []);
+
+  const handleDispatchCommand = useCallback(async (transcript) => {
+    if (!transcript || !transcript.trim()) return;
+
+    // Do not run global AI conversation or toast notifications on auth pages
+    const isAuthRoute = path === "/signin" || path === "/facelogin" || path === "/signup" || path === "/otp";
+    if (isAuthRoute) {
+      return;
+    }
+
+    setVoiceTranscript(transcript);
+    notify.info(`Listening: "${transcript}"`);
+
+    const isAuth = activeUser && activeUser !== "Guest" && path !== "/signin" && path !== "/facelogin" && path !== "/signup" && path !== "/otp";
+
+    // Modal Context Voice Controls when Add Book modal is visible
+    if (showUploadModal) {
+      const lower = transcript.toLowerCase().trim();
+      if (lower.includes("continue") || lower.includes("next") || lower.includes("proceed")) {
+        setWizardStep(prev => Math.min(3, prev + 1));
+        speakWithEchoGuard("Proceeding to next step.");
+        setChatHistory(prev => [
+          ...prev,
+          { sender: "user", text: transcript, time: new Date().toLocaleTimeString() },
+          { sender: "ai", text: "Proceeding to next step.", action: "WIZARD_NEXT", source: "Modal Voice", time: new Date().toLocaleTimeString() }
+        ]);
+        return;
+      }
+      if (lower.includes("live capture") || lower.includes("camera")) {
+        setUploadMethod("camera");
+        speakWithEchoGuard("Selected live capture mode.");
+        setChatHistory(prev => [
+          ...prev,
+          { sender: "user", text: transcript, time: new Date().toLocaleTimeString() },
+          { sender: "ai", text: "Selected live capture mode.", action: "SELECT_CAMERA", source: "Modal Voice", time: new Date().toLocaleTimeString() }
+        ]);
+        return;
+      }
+      if (lower.includes("upload file") || lower.includes("upload") || lower.includes("file")) {
+        setUploadMethod("file");
+        speakWithEchoGuard("Selected file upload mode.");
+        setChatHistory(prev => [
+          ...prev,
+          { sender: "user", text: transcript, time: new Date().toLocaleTimeString() },
+          { sender: "ai", text: "Selected file upload mode.", action: "SELECT_FILE", source: "Modal Voice", time: new Date().toLocaleTimeString() }
+        ]);
+        return;
+      }
+      if (lower.includes("close") || lower.includes("cancel") || lower.includes("exit")) {
+        setShowUploadModal(false);
+        speakWithEchoGuard("Closing modal.");
+        setChatHistory(prev => [
+          ...prev,
+          { sender: "user", text: transcript, time: new Date().toLocaleTimeString() },
+          { sender: "ai", text: "Closing modal.", action: "CLOSE_MODAL", source: "Modal Voice", time: new Date().toLocaleTimeString() }
+        ]);
+        return;
+      }
+    }
+
+    const appContext = {
+      authenticated: isAuth,
+      activeUser: activeUser || "Guest",
+      currentRoute: path || "/",
+      activeBookTitle: activeInteractiveBook ? activeInteractiveBook.title : "",
+      activePageNumber: 1,
+      bookCount: books ? books.length : 0,
+      userBookTitles: books ? books.map(b => b.title).filter(Boolean) : [],
+      pendingField: pendingField
+    };
+
+    // Call Spring Boot backend (Ollama qwen3.5:0.8b parser with context)
+    const cmd = await parseVoiceCommand(transcript, appContext);
+
+    const logSource = cmd._source || (cmd.valid ? "Ollama LLM (qwen3.5:0.8b)" : "Fallback Rule");
+
+    setChatHistory(prev => [
+      ...prev,
+      { sender: "user", text: transcript, time: new Date().toLocaleTimeString() },
+      {
+        sender: "ai",
+        text: (cmd && cmd.feedbackTts) ? cmd.feedbackTts : "Command parsed.",
+        action: cmd ? cmd.action : "UNKNOWN",
+        source: logSource,
+        time: new Date().toLocaleTimeString()
+      }
+    ]);
+
+    if (!cmd || !cmd.feedbackTts) {
+      const fallbackMsg = "I didn't quite catch that. How can I help you?";
+      setAiResponseText(fallbackMsg);
+      notify.warn(fallbackMsg);
+      speakWithEchoGuard(fallbackMsg);
+      return;
+    }
+
+    if (!cmd.feedbackTts.trim()) {
+      return; // Quiet response for ignored self-echoes
+    }
+
+    setAiResponseText(cmd.feedbackTts);
+    console.log("🎮 [App Dispatcher] Executing validated AI Command:", cmd);
+    notify.success(`AI Action: ${(cmd.action || 'CONVERSATION').replace('_', ' ')}`);
+
+    // Spoken feedback with self-echo guard
+    speakWithEchoGuard(cmd.feedbackTts, cmd.speakingSpeed);
+
+    // Command Dispatcher Execution across whole application
+    switch (cmd.action) {
+      case 'OPEN_FACELOGIN':
+        navigate('/facelogin');
+        setPendingField('');
+        break;
+
+      case 'OPEN_SIGNUP':
+        navigate('/signup');
+        setPendingField('name');
+        break;
+
+      case 'OPEN_SIGNIN':
+        navigate('/signin');
+        setPendingField('email');
+        break;
+
+      case 'TYPE_TEXT':
+      case 'SET_FORM_FIELD':
+        const textToType = cmd.query || cmd.value || '';
+        console.log("[VOICE][ACTION][TYPE_TEXT]", JSON.stringify(textToType));
+        console.log("[VOICE][TYPE_TEXT][ACTIVE_ELEMENT]", document.activeElement);
+
+        let activeEl = null;
+        if (document.activeElement && (
+          document.activeElement.tagName === 'INPUT' ||
+          document.activeElement.tagName === 'TEXTAREA' ||
+          document.activeElement.isContentEditable
+        )) {
+          activeEl = document.activeElement;
+        }
+
+        if (activeEl) {
+          if (activeEl.tagName === 'INPUT') {
+            const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+            setter?.call(activeEl, textToType);
+          } else if (activeEl.tagName === 'TEXTAREA') {
+            const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
+            setter?.call(activeEl, textToType);
+          } else if (activeEl.isContentEditable) {
+            activeEl.innerText = textToType;
+          }
+          activeEl.dispatchEvent(new Event('input', { bubbles: true }));
+          activeEl.dispatchEvent(new Event('change', { bubbles: true }));
+          console.log("[VOICE][TYPE_TEXT][VALUE_AFTER]", activeEl.value || activeEl.innerText);
+        } else {
+          console.log("[VOICE][TYPE_TEXT] No editable element focused");
+        }
+
+        const fieldName = cmd.field || pendingField || 'name';
+        window.dispatchEvent(new CustomEvent('bookvault:voice-fill-field', {
+          detail: { field: fieldName, value: textToType }
+        }));
+        if (fieldName === 'name') setPendingField('email');
+        else if (fieldName === 'email') setPendingField('password');
+        else setPendingField('');
+        break;
+
+      case 'SUBMIT_SIGNUP':
+        window.dispatchEvent(new CustomEvent('bookvault:voice-submit-signup'));
+        setPendingField('');
+        break;
+
+      case 'SUBMIT_LOGIN':
+        window.dispatchEvent(new CustomEvent('bookvault:voice-submit-login'));
+        setPendingField('');
+        break;
+
+      case 'SET_VOICE_SPEED':
+        if (cmd.speakingSpeed && 'speechSynthesis' in window) {
+          notify.info(`Speaking speed set to ${cmd.speakingSpeed}x`);
+        }
+        break;
+
+      case 'LIST_BOOKS':
+      case 'OPEN_LIBRARY':
+        navigate('/library');
+        setPendingField('');
+        break;
+
+      case 'OPEN_LATEST_BOOK':
+      case 'CONTINUE_READING':
+        setPendingField('');
+        if (books && books.length > 0) {
+          setActiveInteractiveBook(books[0]);
+        } else {
+          notify.info("No books in your vault yet. Scan or upload a book to get started!");
+        }
+        break;
+
+      case 'NEXT_PAGE':
+      case 'PREVIOUS_PAGE':
+      case 'READ_PAGE':
+      case 'PAUSE_READING':
+      case 'BOOKMARK_PAGE':
+        window.dispatchEvent(new CustomEvent('bookvault:reader-command', { detail: cmd }));
+        break;
+
+      case 'SCAN_PAGE':
+        setShowUploadModal(true);
+        setUploadMethod('camera');
+        setWizardStep(1);
+        break;
+
+      case 'CLOSE_MODAL':
+      case 'CANCEL':
+      case 'STOP':
+        setShowUploadModal(false);
+        if ('speechSynthesis' in window && window.speechSynthesis) {
+          window.speechSynthesis.cancel();
+        }
+        break;
+
+      case 'SEARCH_BOOK':
+        navigate('/search');
+        break;
+
+      case 'OPEN_BOOK':
+        if (books && books.length > 0) {
+          let matched = books[0];
+          if (cmd.query) {
+            const found = books.find(b => b.title && b.title.toLowerCase().includes(cmd.query.toLowerCase()));
+            if (found) matched = found;
+          }
+          setActiveInteractiveBook(matched);
+        } else {
+          notify.info("No books in collection to open.");
+        }
+        break;
+
+      case 'OPEN_SETTINGS':
+        navigate('/settings');
+        break;
+
+      case 'OPEN_PROFILE':
+        navigate('/profile');
+        break;
+
+      case 'NAVIGATE':
+        if (cmd.target === 'home' || cmd.target === 'root') {
+          navigate('/');
+        } else if (cmd.target) {
+          navigate('/' + cmd.target.replace('/', ''));
+        }
+        break;
+
+      default:
+        // Conversational response spoken via TTS
+        break;
+    }
+  }, [activeUser, path, activeInteractiveBook, books, navigate, pendingField]);
+
+  const [isSpeechPausedByScanner, setIsSpeechPausedByScanner] = useState(false);
+
+  useEffect(() => {
+    const handlePause = () => setIsSpeechPausedByScanner(true);
+    const handleResume = () => setIsSpeechPausedByScanner(false);
+
+    window.addEventListener("bookvault:pause-global-voice", handlePause);
+    window.addEventListener("bookvault:resume-global-voice", handleResume);
+    return () => {
+      window.removeEventListener("bookvault:pause-global-voice", handlePause);
+      window.removeEventListener("bookvault:resume-global-voice", handleResume);
+    };
+  }, []);
+
+  // Global Speech Recognition with Moonshine WASM Engine + Web Speech Fallback
+  useEffect(() => {
+    if (!isVoiceListening || isSpeakingTts || isSpeechPausedByScanner) {
+      stopMoonshineListening();
+      if (globalRecRef.current) {
+        try { globalRecRef.current.abort(); } catch (e) {}
+        globalRecRef.current = null;
+      }
+      return;
+    }
+
+    let isComponentMounted = true;
+
+    // 1. Try Moonshine Voice WASM Engine first
+    startMoonshineListening(
+      (finalLine) => {
+        if (isComponentMounted && finalLine) {
+          console.log("🎙️ [Moonshine WASM] Heard Final:", finalLine);
+          handleDispatchCommand(finalLine);
+        }
+      },
+      (interimText) => {
+        if (isComponentMounted && interimText) {
+          setVoiceTranscript(interimText);
+        }
+      }
+    ).then((transcriber) => {
+      // 2. Fallback to Web Speech API if WASM engine not active in browser environment
+      if (!transcriber && isComponentMounted) {
+        const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRec) return;
+
+        try {
+          const recInstance = new SpeechRec();
+          recInstance.continuous = true;
+          recInstance.interimResults = false;
+          recInstance.lang = 'en-US';
+
+          recInstance.onresult = (event) => {
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+              if (event.results[i].isFinal) {
+                const transcript = event.results[i][0].transcript.trim();
+                if (transcript) {
+                  console.log("🎙️ [Web Speech Fallback] Heard:", transcript);
+                  handleDispatchCommand(transcript);
+                }
+              }
+            }
+          };
+
+          recInstance.onend = () => {
+            if (isComponentMounted && isVoiceListening && !isSpeakingTts && !isSpeechPausedByScanner && !(showUploadModal && uploadMethod === 'camera')) {
+              setTimeout(() => {
+                if (isComponentMounted) {
+                  try { recInstance.start(); } catch (e) {}
+                }
+              }, 600);
+            }
+          };
+
+          recInstance.start();
+          globalRecRef.current = recInstance;
+        } catch (e) {}
+      }
+    });
+
+    return () => {
+      isComponentMounted = false;
+      stopMoonshineListening();
+      if (globalRecRef.current) {
+        try { globalRecRef.current.abort(); } catch (e) {}
+        globalRecRef.current = null;
+      }
+    };
+  }, [isVoiceListening, isSpeakingTts, isSpeechPausedByScanner, showUploadModal, uploadMethod, handleDispatchCommand]);
+
+  useEffect(() => {
+    // Load books directly from MySQL for the active logged-in user only
+    mysqlService.getAllBooks(activeUser).then((userBooks) => {
+      setBooks(userBooks || []);
+    });
+  }, [activeUser, path]);
 
 
   useEffect(() => {
@@ -205,32 +625,145 @@ export default function App() {
     setUploadText(file);
 
     if (file.type && file.type.startsWith("image/")) {
-      const reader = new FileReader();
-      reader.onload = async (ev) => {
-        const dataUrl = ev.target.result;
-        setUploadCover(dataUrl);
-        try {
-          notify.info("Extracting text from uploaded image via OCR...");
-          const text = await extractText(dataUrl);
-          if (text) {
-            setExtractedText(text);
-            notify.success("Text extracted from image successfully!");
-          }
-        } catch (err) {
-          console.warn("OCR error on image upload:", err);
-        }
-      };
-      reader.readAsDataURL(file);
+      handleMultiImageUpload([file]);
     } else {
       const reader = new FileReader();
       reader.onload = (ev) => {
         const content = ev.target.result || "";
         setExtractedText(content);
+        if (!uploadTitle) {
+          const cleanName = file.name.replace(/\.[^/.]+$/, "").replace(/[_-]/g, " ");
+          setUploadTitle(cleanName.charAt(0).toUpperCase() + cleanName.slice(1));
+        }
         notify.success(`Loaded text content from ${file.name}`);
       };
       reader.readAsText(file);
     }
   };
+
+  const handleMultiImageUpload = async (files) => {
+    if (!files || files.length === 0) return;
+    const fileArray = Array.from(files);
+
+    notify.info(`Adding ${fileArray.length} ${fileArray.length === 1 ? 'page image' : 'page images'} & extracting text via OCR...`);
+
+    const newPageItems = [];
+    for (let i = 0; i < fileArray.length; i++) {
+      const file = fileArray[i];
+      const dataUrl = await new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = (e) => resolve(e.target.result);
+        reader.readAsDataURL(file);
+      });
+
+      const pageNum = capturedPages.length + newPageItems.length + 1;
+      newPageItems.push({
+        id: Date.now() + Math.random() + i,
+        pageNumber: pageNum,
+        pageTitle: `Page ${pageNum}`,
+        fileName: file.name,
+        dataUrl,
+        image: dataUrl,
+        extractedText: "",
+        isExtracting: true,
+        status: "extracting"
+      });
+    }
+
+    setCapturedPages((prev) => {
+      const updated = [...prev, ...newPageItems];
+      if (!uploadCover && updated.length > 0) {
+        setUploadCover(updated[0].dataUrl);
+      }
+      return updated;
+    });
+
+    if (!uploadTitle && fileArray[0]) {
+      const cleanName = fileArray[0].name.replace(/\.[^/.]+$/, "").replace(/[_-]/g, " ");
+      setUploadTitle(cleanName.charAt(0).toUpperCase() + cleanName.slice(1));
+    }
+
+    // Run OCR asynchronously on each newly added page
+    for (const page of newPageItems) {
+      try {
+        const text = await extractText(page.dataUrl);
+        const finalText = (text && text.trim().length > 0) ? text.trim() : "";
+        setCapturedPages((prev) => {
+          const updated = prev.map((p) =>
+            p.id === page.id
+              ? { ...p, extractedText: finalText, isExtracting: false, status: "done" }
+              : p
+          );
+          // Sync full book combined text to extractedText state
+          const combined = updated.map((p, idx) => `[Page ${idx + 1}]\n${p.extractedText || ""}`).join("\n\n");
+          setExtractedText(combined);
+          return updated;
+        });
+      } catch (err) {
+        console.warn("OCR error for page:", err);
+        setCapturedPages((prev) =>
+          prev.map((p) =>
+            p.id === page.id
+              ? { ...p, extractedText: "", isExtracting: false, status: "error" }
+              : p
+          )
+        );
+      }
+    }
+    notify.success("OCR text extraction completed for uploaded images!");
+  };
+
+  const handleReExtractPage = async (pageId) => {
+    const page = capturedPages.find((p) => p.id === pageId);
+    if (!page) return;
+    setCapturedPages((prev) =>
+      prev.map((p) => (p.id === pageId ? { ...p, isExtracting: true, status: "extracting" } : p))
+    );
+    try {
+      notify.info(`Re-extracting text for Page ${page.pageNumber}...`);
+      const text = await extractText(page.dataUrl || page.image);
+      setCapturedPages((prev) =>
+        prev.map((p) =>
+          p.id === pageId
+            ? { ...p, extractedText: text || "", isExtracting: false, status: "done" }
+            : p
+        )
+      );
+      notify.success(`Page ${page.pageNumber} text updated!`);
+    } catch (err) {
+      notify.error("OCR re-extraction failed: " + err.message);
+      setCapturedPages((prev) =>
+        prev.map((p) =>
+          p.id === pageId ? { ...p, isExtracting: false, status: "error" } : p
+        )
+      );
+    }
+  };
+
+  const handleDeleteUploadedPage = (pageId) => {
+    setCapturedPages((prev) => {
+      const filtered = prev.filter((p) => p.id !== pageId);
+      const renumbered = filtered.map((p, idx) => ({
+        ...p,
+        pageNumber: idx + 1,
+        pageTitle: `Page ${idx + 1}`
+      }));
+      if (renumbered.length > 0 && (!uploadCover || !renumbered.some(p => p.dataUrl === uploadCover))) {
+        setUploadCover(renumbered[0].dataUrl);
+      }
+      return renumbered;
+    });
+    if (selectedPageIdx >= capturedPages.length - 1) {
+      setSelectedPageIdx(Math.max(0, capturedPages.length - 2));
+    }
+  };
+
+  const handleUpdatePageText = (pageId, newText) => {
+    setCapturedPages((prev) =>
+      prev.map((p) => (p.id === pageId ? { ...p, extractedText: newText } : p))
+    );
+  };
+
   const uploadCoverRef = useRef(uploadCover);
   uploadCoverRef.current = uploadCover;
   const uploadTitleRef = useRef(uploadTitle);
@@ -259,27 +792,41 @@ export default function App() {
       || (effectivePages[0]?.dataUrl || effectivePages[0]?.image || "");
 
     if (effectiveMethod === "file" && !uploadText && (!effectivePages || effectivePages.length === 0)) {
-      if (!opts.isAutoSave) alert("Please provide a text file or cover image.");
+      if (!opts.isAutoSave) alert("Please provide at least one book image or a text file.");
       return;
     }
     if ((effectiveMethod === "camera" || effectivePages.length > 0) && !effectiveCover && effectivePages.length === 0) {
-      if (!opts.isAutoSave) alert("Please capture a book page first.");
+      if (!opts.isAutoSave) alert("Please capture or upload a book page first.");
       return;
     }
 
     let combinedContent = "";
+    let pagesList = [];
+
     if (effectivePages.length > 0) {
       combinedContent = effectivePages
         .map((p, idx) => `[Page ${idx + 1}]\n${typeof p === 'string' ? p : (p.extractedText || p.text || "")}`)
         .join("\n\n");
+
+      pagesList = effectivePages.map((p, idx) => ({
+        pageNumber: idx + 1,
+        pageTitle: p.pageTitle || `Page ${idx + 1}`,
+        image: p.dataUrl || p.image || effectiveCover,
+        dataUrl: p.dataUrl || p.image || effectiveCover,
+        extractedText: typeof p === 'string' ? p : (p.extractedText || p.text || ""),
+      }));
     } else {
       combinedContent = extractedText || "No text content provided.";
+      pagesList = [{
+        pageNumber: 1,
+        pageTitle: "Page 1",
+        image: effectiveCover,
+        dataUrl: effectiveCover,
+        extractedText: combinedContent
+      }];
     }
 
-    const pagesList = (effectivePages.length > 0)
-      ? effectivePages.map(p => typeof p === 'string' ? p : (p.extractedText || p.text || ""))
-      : [combinedContent];
-
+    const effectiveUser = uploadUser || activeUser || "Guest";
     const newBook = {
       id: Date.now().toString(),
       title: finalTitle,
@@ -287,35 +834,39 @@ export default function App() {
       content: combinedContent,
       pages: pagesList,
       pageCount: pagesList.length || 1,
+      userId: effectiveUser,
+      userName: effectiveUser,
     };
 
     const finalizeUpload = () => {
-      console.log("finalizeUpload saving book:", newBook.title);
+      console.log("finalizeUpload saving book:", newBook.title, "for user:", effectiveUser);
       const currentList = booksRef.current || books || [];
       const updated = [...currentList, newBook];
       
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+        if (effectiveUser !== activeUser) {
+          const targetKey = `uploadedBooks_${effectiveUser}`;
+          const targetBooks = JSON.parse(localStorage.getItem(targetKey) || "[]");
+          localStorage.setItem(targetKey, JSON.stringify([...targetBooks, newBook]));
+        }
       } catch (e) {
         console.warn("LocalStorage full, saved to memory & MySQL:", e);
       }
       
       setBooks(updated);
 
-      // Save to Java Spring Boot Database (MySQL)
-      const springApiUrl = import.meta.env.VITE_SPRING_BOOT_API_URL || import.meta.env.VITE_SERVER_URL || "http://localhost:8082";
-      console.log("POSTing to Spring Boot MySQL backend:", `${springApiUrl}/api/books`);
-      fetch(`${springApiUrl}/api/books`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title: newBook.title,
-          coverImage: typeof newBook.cover === "string" ? newBook.cover : "",
-          content: newBook.content || "",
-        }),
-      })
-        .then((res) => console.log("MySQL book save response status:", res.status))
-        .catch((err) => console.error("MySQL book save error:", err));
+      // Save directly to MySQL Database (localhost:3306)
+      mysqlService.saveBook(newBook)
+        .then((res) => {
+          if (res.success) {
+            notify.success(`"${newBook.title}" (${newBook.pageCount} ${newBook.pageCount === 1 ? 'page' : 'pages'}) saved directly to MySQL Database!`);
+          }
+        })
+        .catch((err) => {
+          console.warn("MySQL save error:", err);
+          notify.info(`"${newBook.title}" saved for ${effectiveUser}.`);
+        });
 
       setShowUploadModal(false);
       setUploadTitle("");
@@ -323,6 +874,7 @@ export default function App() {
       setUploadText(null);
       setExtractedText("");
       setCapturedPages([]);
+      setSelectedPageIdx(0);
       setUploadMethod("file");
       setWizardStep(1);
       setAutoSaveTimeLeft(25);
@@ -330,8 +882,8 @@ export default function App() {
 
       if ('speechSynthesis' in window && window.speechSynthesis) {
         const msg = opts.isAutoSave
-          ? `25 seconds of inactivity reached. ${finalTitle} automatically saved to vault.`
-          : `${finalTitle} saved to vault.`;
+          ? `25 seconds of inactivity reached. ${finalTitle} automatically saved to MySQL vault.`
+          : `${finalTitle} saved to MySQL vault.`;
         window.speechSynthesis.speak(new SpeechSynthesisUtterance(msg));
       }
 
@@ -405,7 +957,7 @@ export default function App() {
     };
   }, [showUploadModal, capturedPages.length, !!uploadCover]);
 
-  const handleRenameBook = (id, currentTitle, e) => {
+  const handleRenameBook = async (id, currentTitle, e) => {
     e.stopPropagation();
     setActiveDropdown(null);
     const newTitle = window.prompt("Enter new book title:", currentTitle);
@@ -415,12 +967,8 @@ export default function App() {
       setBooks(updated);
 
       // Sync Rename to MySQL Database
-      const springApiUrl = import.meta.env.VITE_SPRING_BOOT_API_URL || import.meta.env.VITE_SERVER_URL || "http://localhost:8082";
-      fetch(`${springApiUrl}/api/books/${id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: newTitle.trim() }),
-      }).catch(err => console.error("MySQL rename sync error:", err));
+      await mysqlService.updateBook(id, { title: newTitle.trim() });
+      notify.success("Book title updated in MySQL Database.");
     }
   };
 
@@ -428,19 +976,15 @@ export default function App() {
     const file = e.target.files?.[0];
     if (file && editingCoverId) {
       const reader = new FileReader();
-      reader.onload = (ev) => {
+      reader.onload = async (ev) => {
         const coverData = ev.target.result;
         const updated = books.map(b => b.id === editingCoverId ? { ...b, cover: coverData } : b);
         try { localStorage.setItem(STORAGE_KEY, JSON.stringify(updated)); } catch (_) {}
         setBooks(updated);
 
         // Sync Cover to MySQL Database
-        const springApiUrl = import.meta.env.VITE_SPRING_BOOT_API_URL || import.meta.env.VITE_SERVER_URL || "http://localhost:8082";
-        fetch(`${springApiUrl}/api/books/${editingCoverId}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ coverImage: coverData }),
-        }).catch(err => console.error("MySQL cover sync error:", err));
+        await mysqlService.updateBook(editingCoverId, { coverImage: coverData, cover: coverData });
+        notify.success("Book cover updated in MySQL Database.");
 
         setEditingCoverId(null);
       };
@@ -454,7 +998,7 @@ export default function App() {
     setActiveDropdown(null);
     const shouldDelete = await notify.confirm({
       title: "Delete Book",
-      message: "Are you sure you want to remove this book from your vault? This cannot be undone.",
+      message: "Are you sure you want to permanently remove this book and its pages from the MySQL database and vault?",
       confirmText: "Delete Book",
       cancelText: "Keep Book",
       type: "danger",
@@ -462,17 +1006,9 @@ export default function App() {
     });
 
     if (shouldDelete) {
-      const updated = books.filter(b => b.id !== id);
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(updated)); } catch (_) {}
-      setBooks(updated);
-
-      // Sync Delete to MySQL Database
-      const springApiUrl = import.meta.env.VITE_SPRING_BOOT_API_URL || import.meta.env.VITE_SERVER_URL || "http://localhost:8082";
-      fetch(`${springApiUrl}/api/books/${id}`, {
-        method: "DELETE",
-      }).catch(err => console.error("MySQL delete sync error:", err));
-
-      notify.success("Book removed from vault.");
+      await mysqlService.deleteBook(id, activeUser);
+      setBooks(prev => prev.filter(b => String(b.id) !== String(id)));
+      notify.success("Book deleted from MySQL database.");
     }
   };
 
@@ -604,9 +1140,15 @@ export default function App() {
     if (path === "/signup") return <SignUp />;
     if (path === "/otp") return <OTPVerify />;
     if (path === "/profile") return <ProfileScreen />;
-    if (path === "/admin" || path === "/admin-dashboard" || path === "/users") return <AdminDashboard />;
+    if (path === "/admin" || path === "/admin-dashboard" || path === "/users") {
+      const userRole = localStorage.getItem("role");
+      if (userRole !== "ADMIN") {
+        return <SignIn />;
+      }
+      return <AdminDashboard />;
+    }
     if (path === "/search") return <div className="p-10">🔍 Search Screen</div>;
-    if (path === "/settings") return <div className="p-10">⚙️ Settings Screen</div>;
+    if (path === "/settings") return <SettingsScreen activeUser={activeUser} navigate={navigate} />;
 
     if (path === "/library") {
       return (
@@ -697,43 +1239,77 @@ export default function App() {
           </button>
 
           <h2 style={{ fontFamily: 'Playfair Display, serif', fontSize: 26, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 24, marginTop: 16 }}>Continue Reading</h2>
+          {(() => {
+            const pausedBooks = books.filter(b => 
+              localStorage.getItem(`readingPos_${activeUser}_${b.id}`) || 
+              localStorage.getItem(`readingPos_${activeUser}_${b.title}`)
+            );
 
-          {pausedBooks.length > 0 ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, textAlign: 'left' }}>
-              {pausedBooks.map(b => (
-                <div
-                  key={b.id}
-                  onClick={() => navigate(`/reader/${b.id}`)}
-                  className="card card-interactive"
-                  style={{ padding: 16, display: 'flex', alignItems: 'center', gap: 16 }}
-                >
-                  {b.cover ? (
-                    <img src={b.cover} alt="cover" style={{ width: 56, height: 72, objectFit: 'cover', borderRadius: 10, boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }} />
-                  ) : (
-                    <div style={{ width: 56, height: 72, background: 'linear-gradient(135deg, #d8cdb8, #c2b5a0)', borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24, color: '#9a8a78' }}>
-                      📖
+            return pausedBooks.length > 0 ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12, textAlign: 'left' }}>
+                {pausedBooks.map(b => (
+                  <div
+                    key={b.id}
+                    onClick={() => {
+                      const pages = b.pages && b.pages.length > 0 ? b.pages : [{ pageNumber: 1, pageTitle: 'Page 1', image: b.cover || b.cover_image, extractedText: b.content || b.full_text || '' }];
+                      setActiveInteractiveBook({
+                        ...b,
+                        bookId: b.id,
+                        cover: b.cover || b.cover_image,
+                        pages
+                      });
+                    }}
+                    className="card card-interactive"
+                    style={{ padding: 16, display: 'flex', alignItems: 'center', gap: 16, cursor: 'pointer' }}
+                  >
+                    {b.cover || b.cover_image ? (
+                      <img src={b.cover || b.cover_image} alt="cover" style={{ width: 56, height: 72, objectFit: 'cover', borderRadius: 10, boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }} />
+                    ) : (
+                      <div style={{ width: 56, height: 72, background: 'linear-gradient(135deg, #d8cdb8, #c2b5a0)', borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24, color: '#9a8a78' }}>
+                        📖
+                      </div>
+                    )}
+                    <div style={{ flex: 1 }}>
+                      <h3 style={{ fontFamily: 'Playfair Display, serif', fontSize: 16, fontWeight: 600, color: 'var(--text-primary)', margin: 0, lineHeight: 1.3 }}>{b.title}</h3>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--accent-orange)', fontSize: 13, fontWeight: 600, marginTop: 6 }}>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="var(--accent-orange)" stroke="none">
+                          <polygon points="5 3 19 12 5 21 5 3" />
+                        </svg>
+                        Resume Reading
+                      </span>
                     </div>
-                  )}
-                  <div style={{ flex: 1 }}>
-                    <h3 style={{ fontFamily: 'Playfair Display, serif', fontSize: 16, fontWeight: 600, color: 'var(--text-primary)', margin: 0, lineHeight: 1.3 }}>{b.title}</h3>
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--accent-orange)', fontSize: 13, fontWeight: 600, marginTop: 6 }}>
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="var(--accent-orange)" stroke="none">
-                        <polygon points="5 3 19 12 5 21 5 3" />
-                      </svg>
-                      Resume Reading
-                    </span>
                   </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="empty-state">
-              <div className="empty-state-icon">📖</div>
-              <div className="empty-state-title">No Books in Progress</div>
-              <div className="empty-state-subtitle">Start reading a book to see it here!</div>
-            </div>
-          )}
+                ))}
+              </div>
+            ) : (
+              <div className="empty-state">
+                <div className="empty-state-icon">📖</div>
+                <div className="empty-state-title">No Books in Progress</div>
+                <div className="empty-state-subtitle">Start reading a book to see it here!</div>
+              </div>
+            );
+          })()}
         </div>
+      );
+    }
+
+    if (path === "/database" || path === "/mysql") {
+      const userRole = localStorage.getItem("role");
+      if (userRole !== "ADMIN") {
+        return <SignIn />;
+      }
+      return (
+        <MySQLDatabasePage
+          onOpenBook={(b) => {
+            const pages = b.pages || [{ pageNumber: 1, pageTitle: 'Page 1', image: b.cover || b.cover_image, extractedText: b.content || b.full_text || '' }];
+            setActiveInteractiveBook({
+              ...b,
+              cover: b.cover || b.cover_image,
+              pages
+            });
+          }}
+          onNavigateHome={() => navigate("/")}
+        />
       );
     }
 
@@ -1009,6 +1585,21 @@ export default function App() {
               <div className="quick-action-subtitle">Voice-guided smart capture</div>
             </div>
           </div>
+
+          {localStorage.getItem("role") === "ADMIN" && (
+            <div
+              className="quick-action-card"
+              onClick={() => navigate("/database")}
+            >
+              <div className="quick-action-icon" style={{ background: "linear-gradient(135deg, #e0f2fe, #bae6fd)" }}>
+                <Database size={22} color="#0284c7" />
+              </div>
+              <div>
+                <div className="quick-action-title">MySQL Database</div>
+                <div className="quick-action-subtitle">Live records & tables (Port 3306)</div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* ── Uploaded Books Section ── */}
@@ -1231,33 +1822,243 @@ export default function App() {
                     type="text"
                     value={uploadTitle}
                     onChange={(e) => setUploadTitle(e.target.value)}
-                    placeholder="Enter a title…"
+                    placeholder="Enter a book or document title…"
                   />
                 </div>
 
                 {uploadMethod === "file" ? (
-                  <>
-                    <div>
-                      <label style={{ fontSize: 12, fontWeight: 700, color: "var(--text-muted)", letterSpacing: "0.06em", textTransform: "uppercase", display: "block", marginBottom: 7 }}>Cover Image <span style={{ fontWeight: 400, textTransform: "none", opacity: 0.7 }}>(optional)</span></label>
-                      <div className="file-input-wrap">
-                        <div className={`file-input-display ${uploadCover ? 'has-file' : ''}`}>
-                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21 15 16 10 5 21" /></svg>
-                          {uploadCover ? uploadCover.name || 'Image selected' : 'Choose an image...'}
-                        </div>
-                        <input type="file" accept="image/*" onChange={(e) => setUploadCover(e.target.files?.[0] || null)} />
-                      </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                    {/* Sub-tabs: Multi-Page Images vs Document File */}
+                    <div style={{ display: "flex", gap: 8, background: "rgba(0,0,0,0.04)", padding: 4, borderRadius: 10 }}>
+                      <button
+                        type="button"
+                        onClick={() => setUploadSubTab("images")}
+                        style={{
+                          flex: 1,
+                          padding: "8px 12px",
+                          borderRadius: 8,
+                          border: "none",
+                          background: uploadSubTab === "images" ? "#fff" : "transparent",
+                          boxShadow: uploadSubTab === "images" ? "0 2px 8px rgba(0,0,0,0.06)" : "none",
+                          fontWeight: 700,
+                          fontSize: 13,
+                          color: uploadSubTab === "images" ? "var(--accent-orange)" : "var(--text-secondary)",
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          gap: 6
+                        }}
+                      >
+                        <ImageIcon size={15} />
+                        Book Images / Pages ({capturedPages.length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setUploadSubTab("doc")}
+                        style={{
+                          flex: 1,
+                          padding: "8px 12px",
+                          borderRadius: 8,
+                          border: "none",
+                          background: uploadSubTab === "doc" ? "#fff" : "transparent",
+                          boxShadow: uploadSubTab === "doc" ? "0 2px 8px rgba(0,0,0,0.06)" : "none",
+                          fontWeight: 700,
+                          fontSize: 13,
+                          color: uploadSubTab === "doc" ? "var(--accent-orange)" : "var(--text-secondary)",
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          gap: 6
+                        }}
+                      >
+                        <FileText size={15} />
+                        Text / Markdown File
+                      </button>
                     </div>
-                    <div>
-                      <label style={{ fontSize: 12, fontWeight: 700, color: "var(--text-muted)", letterSpacing: "0.06em", textTransform: "uppercase", display: "block", marginBottom: 7 }}>Text Content File</label>
-                      <div className="file-input-wrap">
-                        <div className={`file-input-display ${uploadText ? 'has-file' : ''}`}>
-                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /></svg>
-                          {uploadText ? uploadText.name : 'Choose a .txt, .md, or .json file...'}
-                        </div>
-                        <input type="file" accept=".txt,.md,.json,image/*" onChange={(e) => handleTextFileChange(e.target.files?.[0])} />
+
+                    {uploadSubTab === "images" ? (
+                      <div>
+                        {/* Multi-Image Upload dropzone */}
+                        <label
+                          htmlFor="multi-page-file-input"
+                          style={{
+                            display: "flex",
+                            flexDirection: "column",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            border: "2px dashed #e2d9cd",
+                            borderRadius: 14,
+                            padding: "20px 16px",
+                            background: "#fbf9f6",
+                            cursor: "pointer",
+                            transition: "all 0.2s",
+                            textAlign: "center",
+                            gap: 8
+                          }}
+                        >
+                          <div style={{ width: 44, height: 44, borderRadius: "50%", background: "rgba(255,121,0,0.12)", display: "flex", alignItems: "center", justifyContent: "center", color: "#FF7900" }}>
+                            <Plus size={22} />
+                          </div>
+                          <div>
+                            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-primary)" }}>
+                              {capturedPages.length === 0 ? "Select Book Images (Single or Multiple)" : "+ Add More Book Page Images"}
+                            </div>
+                            <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 3 }}>
+                              Upload 1 or more images — OCR extracts text automatically for each page
+                            </div>
+                          </div>
+                          <input
+                            id="multi-page-file-input"
+                            type="file"
+                            multiple
+                            accept="image/*"
+                            style={{ display: "none" }}
+                            onChange={(e) => handleMultiImageUpload(e.target.files)}
+                          />
+                        </label>
+
+                        {/* Gallery Strip of Uploaded Pages */}
+                        {capturedPages.length > 0 && (
+                          <div style={{ marginTop: 16 }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                              <span style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--text-muted)" }}>
+                                Uploaded Pages ({capturedPages.length})
+                              </span>
+                              <span style={{ fontSize: 11, color: "var(--accent-orange)", fontWeight: 600 }}>
+                                Click page to view & edit text
+                              </span>
+                            </div>
+
+                            <div style={{ display: "flex", gap: 10, overflowX: "auto", paddingBottom: 6 }}>
+                              {capturedPages.map((page, idx) => {
+                                const isSelected = selectedPageIdx === idx;
+                                return (
+                                  <div
+                                    key={page.id || idx}
+                                    onClick={() => setSelectedPageIdx(idx)}
+                                    style={{
+                                      width: 84,
+                                      flexShrink: 0,
+                                      cursor: "pointer",
+                                      border: isSelected ? "2px solid #FF7900" : "1px solid var(--border)",
+                                      borderRadius: 10,
+                                      padding: 4,
+                                      background: isSelected ? "rgba(255,121,0,0.06)" : "#fff",
+                                      transition: "all 0.15s",
+                                      boxShadow: isSelected ? "0 4px 12px rgba(255,121,0,0.18)" : "none",
+                                      position: "relative"
+                                    }}
+                                  >
+                                    <div style={{ width: "100%", height: 74, borderRadius: 6, overflow: "hidden", background: "#f0e9df" }}>
+                                      <img src={page.dataUrl || page.image} alt={`Page ${idx + 1}`} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                                    </div>
+                                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4, fontSize: 10, fontWeight: 700, color: "var(--text-primary)" }}>
+                                      <span>P.{idx + 1}</span>
+                                      {page.isExtracting ? (
+                                        <Loader2 size={11} className="animate-spin" color="#FF7900" />
+                                      ) : (page.extractedText && page.extractedText.trim().length > 0) ? (
+                                        <CheckCircle2 size={12} color="#22c55e" />
+                                      ) : (
+                                        <AlertCircle size={12} color="#f59e0b" />
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+
+                            {/* Active Page Inspector */}
+                            {capturedPages[selectedPageIdx] && (
+                              <div style={{ marginTop: 12, background: "#fdfbf7", border: "1px solid #e9e5df", borderRadius: 12, padding: 14 }}>
+                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, flexWrap: "wrap", gap: 6 }}>
+                                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                    <span style={{ fontSize: 13, fontWeight: 700, color: "var(--text-primary)" }}>
+                                      Page {selectedPageIdx + 1} of {capturedPages.length}
+                                    </span>
+                                    {uploadCover === (capturedPages[selectedPageIdx].dataUrl || capturedPages[selectedPageIdx].image) ? (
+                                      <span style={{ background: "rgba(255,121,0,0.12)", color: "#FF7900", fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 6 }}>
+                                        ⭐ Cover
+                                      </span>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        onClick={() => setUploadCover(capturedPages[selectedPageIdx].dataUrl || capturedPages[selectedPageIdx].image)}
+                                        style={{ border: "none", background: "none", color: "#6b7280", fontSize: 11, cursor: "pointer", textDecoration: "underline" }}
+                                      >
+                                        Set as Cover
+                                      </button>
+                                    )}
+                                  </div>
+
+                                  <div style={{ display: "flex", gap: 6 }}>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleReExtractPage(capturedPages[selectedPageIdx].id)}
+                                      disabled={capturedPages[selectedPageIdx].isExtracting}
+                                      style={{ display: "flex", alignItems: "center", gap: 4, background: "#fff", border: "1px solid #d1d5db", borderRadius: 6, padding: "4px 8px", fontSize: 11, fontWeight: 600, cursor: "pointer" }}
+                                      title="Re-run OCR for this page"
+                                    >
+                                      <RotateCcw size={12} />
+                                      Re-run OCR
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteUploadedPage(capturedPages[selectedPageIdx].id)}
+                                      style={{ display: "flex", alignItems: "center", gap: 4, background: "#fee2e2", border: "none", color: "#b91c1c", borderRadius: 6, padding: "4px 8px", fontSize: 11, fontWeight: 600, cursor: "pointer" }}
+                                      title="Delete this page"
+                                    >
+                                      <Trash2 size={12} />
+                                      Delete
+                                    </button>
+                                  </div>
+                                </div>
+
+                                <label style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--text-muted)", display: "block", marginBottom: 6 }}>
+                                  Extracted Text for Page {selectedPageIdx + 1} (Editable)
+                                </label>
+                                <textarea
+                                  className="field-input"
+                                  rows={4}
+                                  value={capturedPages[selectedPageIdx].extractedText || ""}
+                                  onChange={(e) => handleUpdatePageText(capturedPages[selectedPageIdx].id, e.target.value)}
+                                  placeholder={capturedPages[selectedPageIdx].isExtracting ? "Extracting text via OCR..." : "No text detected yet. You can type or edit text here..."}
+                                  style={{ resize: "vertical", fontSize: 13, lineHeight: 1.6 }}
+                                />
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
-                    </div>
-                  </>
+                    ) : (
+                      /* Document / Plain Text file input */
+                      <div>
+                        <label style={{ fontSize: 12, fontWeight: 700, color: "var(--text-muted)", letterSpacing: "0.06em", textTransform: "uppercase", display: "block", marginBottom: 7 }}>Text Content File (.txt, .md, .json)</label>
+                        <div className="file-input-wrap">
+                          <div className={`file-input-display ${uploadText ? 'has-file' : ''}`}>
+                            <FileText size={16} />
+                            {uploadText ? uploadText.name : 'Choose a .txt, .md, or .json file...'}
+                          </div>
+                          <input type="file" accept=".txt,.md,.json" onChange={(e) => handleTextFileChange(e.target.files?.[0])} />
+                        </div>
+                        {extractedText && (
+                          <div style={{ marginTop: 12 }}>
+                            <label style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", color: "var(--text-muted)", display: "block", marginBottom: 6 }}>
+                              Document Text Preview (Editable)
+                            </label>
+                            <textarea
+                              className="field-input"
+                              rows={4}
+                              value={extractedText}
+                              onChange={(e) => setExtractedText(e.target.value)}
+                              style={{ resize: "vertical", fontSize: 13 }}
+                            />
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 ) : (
                   <div>
                     <BookScanner
@@ -1309,7 +2110,14 @@ export default function App() {
                     <button
                       onClick={() => {
                         if (!uploadTitle) { notify.warning("Please provide a title for the book."); return; }
-                        if (!uploadText) { notify.warning("Please select or drop a text file."); return; }
+                        if (uploadSubTab === "images" && capturedPages.length === 0) {
+                          notify.warning("Please select at least one page image.");
+                          return;
+                        }
+                        if (uploadSubTab === "doc" && !uploadText && !extractedText) {
+                          notify.warning("Please select a text file.");
+                          return;
+                        }
                         setWizardStep(3);
                       }}
                       className="btn-primary"
@@ -1338,27 +2146,95 @@ export default function App() {
                     ) : (
                       <div style={{ width: 56, height: 72, borderRadius: 10, background: 'linear-gradient(135deg, #d8cdb8, #c2b5a0)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20, flexShrink: 0 }}>📖</div>
                     )}
-                    <div>
-                      <h3 style={{ margin: 0, fontFamily: 'Playfair Display, serif', fontSize: 18, fontWeight: 600, color: 'var(--text-primary)' }}>{uploadTitle}</h3>
-                      <p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--text-muted)' }}>
-                        {uploadMethod === "file" ? (
-                          <>📁 File upload · {uploadText?.name || 'text file'}</>
-                        ) : (
-                          <>📸 Camera scan · Book page captured</>
-                        )}
-                      </p>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <h3 style={{ margin: 0, fontFamily: 'Playfair Display, serif', fontSize: 18, fontWeight: 600, color: 'var(--text-primary)' }}>{uploadTitle || "Untitled Book"}</h3>
+                        <span style={{ background: '#ecfdf5', color: '#059669', fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 8, border: '1px solid #a7f3d0' }}>
+                          MySQL Connected
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
+                        <span style={{ background: '#f1f5f9', color: '#334155', fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 6 }}>
+                          👤 Account: <strong>{uploadUser || activeUser || "Guest"}</strong>
+                        </span>
+                        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                          📖 {capturedPages.length > 0 ? `${capturedPages.length} ${capturedPages.length === 1 ? 'Page' : 'Pages'}` : '1 Document'}
+                        </span>
+                      </div>
                     </div>
                   </div>
                 </div>
 
-                {/* Text preview only for file upload method */}
-                {uploadMethod === "file" && (extractedText || uploadText) && (
-                  <div style={{ padding: 14, background: 'rgba(243,237,228,0.5)', borderRadius: 10, border: '1px solid var(--border)', maxHeight: 120, overflowY: 'auto' }}>
-                    <p style={{ margin: 0, fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.6, fontFamily: 'Georgia, serif' }}>
-                      {extractedText ? extractedText.substring(0, 300) + (extractedText.length > 300 ? '...' : '') : 'File content will be loaded on save'}
+                {/* Text preview & audio play button */}
+                <div style={{ padding: 14, background: 'rgba(243,237,228,0.5)', borderRadius: 12, border: '1px solid var(--border)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)' }}>
+                      Extracted Text Content
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const textToPlay = (capturedPages.length > 0 && capturedPages[selectedPageIdx]?.extractedText)
+                          ? capturedPages[selectedPageIdx].extractedText
+                          : (extractedText || uploadTitle);
+                        if ('speechSynthesis' in window && window.speechSynthesis) {
+                          window.speechSynthesis.cancel();
+                          const utter = new SpeechSynthesisUtterance(textToPlay);
+                          utter.lang = 'en-US';
+                          utter.rate = 1.0;
+                          window.speechSynthesis.speak(utter);
+                        }
+                      }}
+                      style={{
+                        background: '#eff6ff',
+                        color: '#2563eb',
+                        border: '1px solid #bfdbfe',
+                        borderRadius: 8,
+                        padding: '4px 10px',
+                        fontSize: 12,
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 5
+                      }}
+                    >
+                      🔊 Listen (Play Audio)
+                    </button>
+                  </div>
+
+                  {capturedPages.length > 1 && (
+                    <div style={{ display: 'flex', gap: 6, marginBottom: 10, overflowX: 'auto', paddingBottom: 4 }}>
+                      {capturedPages.map((p, idx) => (
+                        <button
+                          key={p.id || idx}
+                          type="button"
+                          onClick={() => setSelectedPageIdx(idx)}
+                          style={{
+                            padding: '4px 10px',
+                            borderRadius: 6,
+                            border: 'none',
+                            background: selectedPageIdx === idx ? '#FF7900' : '#fff',
+                            color: selectedPageIdx === idx ? '#fff' : '#4b5563',
+                            fontSize: 11,
+                            fontWeight: 700,
+                            cursor: 'pointer'
+                          }}
+                        >
+                          Page {idx + 1}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  <div style={{ maxHeight: 140, overflowY: 'auto' }}>
+                    <p style={{ margin: 0, fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.6, fontFamily: 'Georgia, serif', whiteSpace: 'pre-wrap' }}>
+                      {capturedPages.length > 0
+                        ? (capturedPages[selectedPageIdx]?.extractedText || `[Page ${selectedPageIdx + 1}] Image captured and text ready.`)
+                        : (extractedText || 'Page text extracted and ready to save to database.')}
                     </p>
                   </div>
-                )}
+                </div>
 
                 <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
                   <button
@@ -1376,7 +2252,7 @@ export default function App() {
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <polyline points="20 6 9 17 4 12" />
                     </svg>
-                    Save to Vault
+                    Save to MySQL Vault
                   </button>
                 </div>
               </div>
@@ -1396,6 +2272,253 @@ export default function App() {
             <div className="success-subtitle">Your book has been saved to the vault</div>
           </div>
         </div>
+      )}
+
+      {/* ── Active Book Reader Modal Overlay ── */}
+      {activeInteractiveBook && (
+        <InteractiveBook
+          bookId={activeInteractiveBook.id || activeInteractiveBook.bookId}
+          bookTitle={activeInteractiveBook.title}
+          bookAuthor={activeInteractiveBook.author}
+          coverImage={activeInteractiveBook.cover || activeInteractiveBook.coverImage || activeInteractiveBook.cover_image}
+          pages={activeInteractiveBook.pages || []}
+          activeUser={activeUser}
+          onClose={() => setActiveInteractiveBook(null)}
+        />
+      )}
+
+      {/* ── Doraemon AI Voice Assistant & Dev Console (Hidden on Auth Pages) ── */}
+      {!(path === "/signin" || path === "/facelogin" || path === "/signup" || path === "/otp") && (
+        <>
+          <div
+            style={{
+              position: "fixed",
+              bottom: "20px",
+              right: "20px",
+              zIndex: 99999,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "flex-end",
+              gap: "8px",
+              pointerEvents: "none"
+            }}
+          >
+            {/* Doraemon AI Response & Speech Bubble */}
+            {(aiResponseText || voiceTranscript) && isVoiceListening && (
+              <div
+                style={{
+                  background: "rgba(0, 0, 0, 0.9)",
+                  backdropFilter: "blur(12px)",
+                  border: "1px solid rgba(34, 197, 94, 0.4)",
+                  borderRadius: "16px 16px 4px 16px",
+                  padding: "10px 14px",
+                  maxWidth: "270px",
+                  boxShadow: "0 8px 32px rgba(0, 0, 0, 0.5)",
+                  color: "#ffffff",
+                  fontSize: "12px",
+                  lineHeight: "1.45",
+                  pointerEvents: "auto",
+                  fontFamily: "'Inter', sans-serif"
+                }}
+              >
+                <div style={{ fontSize: "10px", color: "#4ade80", marginBottom: "3px", fontWeight: "700" }}>
+                  🐱 Doraemon AI
+                </div>
+                <div>{aiResponseText || "Listening..."}</div>
+                {voiceTranscript && (
+                  <div style={{ fontSize: "10px", color: "rgba(255, 255, 255, 0.6)", marginTop: "4px", fontStyle: "italic", borderTop: "1px solid rgba(255,255,255,0.1)", paddingTop: "4px" }}>
+                    Heard: "{voiceTranscript}"
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Clean Doraemon PNG Sprite Mascot Only */}
+            <div
+              onClick={() => {
+                const nextState = !isVoiceListening;
+                setIsVoiceListening(nextState);
+                if (nextState) {
+                  notify.success("Doraemon AI Assistant Active!");
+                  if ('speechSynthesis' in window && window.speechSynthesis) {
+                    window.speechSynthesis.cancel();
+                    window.speechSynthesis.speak(new SpeechSynthesisUtterance("Doraemon active."));
+                  }
+                } else {
+                  notify.info("Doraemon Sleeping.");
+                }
+              }}
+              style={{
+                width: "90px",
+                height: "90px",
+                cursor: "pointer",
+                pointerEvents: "auto",
+                transition: "transform 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275)",
+                filter: isVoiceListening
+                  ? "drop-shadow(0 0 12px rgba(74, 222, 128, 0.8))"
+                  : "drop-shadow(0 4px 8px rgba(0, 0, 0, 0.5)) opacity(0.7)",
+                userSelect: "none"
+              }}
+              title={isVoiceListening ? "Click to Pause Doraemon" : "Click to Wake Doraemon"}
+            >
+              <img
+                src={isVoiceListening ? `/dora-sprites/emotion-calm-0${doraFrame}.png` : `/dora-sprites/action-nap-0${doraFrame}.png`}
+                alt="Doraemon AI Mascot"
+                style={{
+                  width: "100%",
+                  height: "100%",
+                  objectFit: "contain",
+                  imageRendering: "pixelated"
+                }}
+              />
+            </div>
+          </div>
+
+          {/* Movable Developer AI Voice Debug Console UI Panel */}
+          <div
+            style={{
+              position: "fixed",
+              left: `${devConsolePos.x}px`,
+              top: `${devConsolePos.y}px`,
+              zIndex: 99999,
+              fontFamily: "'Courier New', monospace",
+              pointerEvents: "auto",
+              touchAction: "none"
+            }}
+          >
+            <div
+              onMouseDown={handleStartDrag}
+              onTouchStart={handleStartDrag}
+              style={{
+                background: "rgba(15, 23, 42, 0.95)",
+                backdropFilter: "blur(12px)",
+                border: "1px solid rgba(56, 189, 248, 0.4)",
+                borderRadius: showDevConsole ? "12px 12px 0 0" : "12px",
+                padding: "8px 14px",
+                color: "#38bdf8",
+                fontSize: "11px",
+                fontWeight: "bold",
+                cursor: "grab",
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+                boxShadow: "0 4px 16px rgba(0, 0, 0, 0.5)",
+                userSelect: "none"
+              }}
+              title="Drag header to move developer console anywhere on screen"
+            >
+              <span style={{ cursor: "grab", opacity: 0.7 }}>⋮⋮</span>
+              <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#34d399", display: "inline-block" }} />
+              <span>🛠️ Developer AI Logs ({chatHistory.length})</span>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowDevConsole(!showDevConsole);
+                }}
+                style={{
+                  marginLeft: "auto",
+                  background: "none",
+                  border: "none",
+                  color: "#38bdf8",
+                  cursor: "pointer",
+                  fontSize: "10px",
+                  fontWeight: "bold"
+                }}
+              >
+                {showDevConsole ? "▼ Hide" : "▲ Show"}
+              </button>
+            </div>
+
+            {showDevConsole && (
+              <div
+                style={{
+                  width: "350px",
+                  height: "240px",
+                  background: "rgba(10, 15, 26, 0.96)",
+                  backdropFilter: "blur(16px)",
+                  border: "1px solid rgba(56, 189, 248, 0.3)",
+                  borderTop: "none",
+                  borderRadius: "0 0 12px 12px",
+                  padding: "10px",
+                  display: "flex",
+                  flexDirection: "column",
+                  boxShadow: "0 12px 36px rgba(0, 0, 0, 0.6)",
+                  fontSize: "11px"
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid rgba(255,255,255,0.1)", paddingBottom: "6px", marginBottom: "8px" }}>
+                  <span style={{ color: "#4ade80", fontSize: "10px", fontWeight: "bold" }}>
+                    ● Engine: Ollama LLM (qwen3.5:0.8b)
+                  </span>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setChatHistory([]); }}
+                    style={{ background: "none", border: "none", color: "#94a3b8", cursor: "pointer", fontSize: "10px", textDecoration: "underline" }}
+                  >
+                    Clear
+                  </button>
+                </div>
+
+                <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: "8px", paddingRight: "4px" }}>
+                  {chatHistory.length === 0 ? (
+                    <div style={{ color: "#64748b", fontStyle: "italic", textAlign: "center", padding: "10px" }}>
+                      No voice logs yet. Speak to test Ollama AI.
+                    </div>
+                  ) : (
+                    chatHistory.map((item, idx) => (
+                      <div key={idx} style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+                        {item.sender === "user" ? (
+                          <div style={{ alignSelf: "flex-start", background: "rgba(59, 130, 246, 0.2)", borderLeft: "3px solid #3b82f6", padding: "5px 8px", borderRadius: "4px", maxWidth: "92%" }}>
+                            <span style={{ color: "#60a5fa", fontWeight: "bold" }}>🎤 You: </span>
+                            <span style={{ color: "#f8fafc" }}>"{item.text}"</span>
+                            <span style={{ fontSize: "9px", color: "#64748b", marginLeft: "6px" }}>{item.time}</span>
+                          </div>
+                        ) : item.sender === "ai" ? (
+                          <div style={{ alignSelf: "flex-end", background: "rgba(34, 197, 94, 0.15)", borderRight: "3px solid #22c55e", padding: "5px 8px", borderRadius: "4px", maxWidth: "92%", textAlign: "right" }}>
+                            <div style={{ color: "#4ade80", fontWeight: "bold", fontSize: "10px" }}>
+                              🤖 AI [{item.action}] <span style={{ fontSize: "8px", opacity: 0.8 }}>({item.source})</span>
+                            </div>
+                            <div style={{ color: "#f1f5f9", marginTop: "2px" }}>"{item.text}"</div>
+                            <div style={{ fontSize: "8px", color: "#94a3b8", marginTop: "2px" }}>{item.time}</div>
+                          </div>
+                        ) : (
+                          <div style={{ fontSize: "10px", color: "#38bdf8", fontStyle: "italic", textAlign: "center", padding: "2px" }}>
+                            {item.text}
+                          </div>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    if (devInputText && devInputText.trim()) {
+                      handleDispatchCommand(devInputText.trim());
+                      setDevInputText("");
+                    }
+                  }}
+                  style={{ display: "flex", gap: "6px", marginTop: "8px", borderTop: "1px solid rgba(255,255,255,0.1)", paddingTop: "6px" }}
+                >
+                  <input
+                    type="text"
+                    value={devInputText}
+                    onChange={(e) => setDevInputText(e.target.value)}
+                    placeholder='Test voice command (e.g. "type Alex")'
+                    style={{ flex: 1, background: "rgba(15, 23, 42, 0.9)", border: "1px solid rgba(56, 189, 248, 0.4)", borderRadius: "4px", color: "#fff", padding: "4px 8px", fontSize: "10px" }}
+                  />
+                  <button
+                    type="submit"
+                    style={{ background: "#0284c7", color: "#fff", border: "none", borderRadius: "4px", padding: "4px 8px", fontSize: "10px", fontWeight: "bold", cursor: "pointer" }}
+                  >
+                    Send
+                  </button>
+                </form>
+              </div>
+            )}
+          </div>
+        </>
       )}
 
       {/* ── Global Professional Notifications & Modals ── */}
