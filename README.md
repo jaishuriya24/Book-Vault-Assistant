@@ -194,6 +194,7 @@ Book-Vault-Assistant/
 | `npm run lint` | Runs the Oxlint static code analyzer. |
 
 ---
+## check out: https://book-vault-assistant.vercel.app/
 
 ## 🤝 Contributing
 
